@@ -27,7 +27,7 @@ use crate::config::{
     is_pdf_format, is_text_format,
 };
 use crate::error::{AppError, Result};
-use crate::scan::{PdfStatus, inspect_pdf};
+use crate::scan::{PdfStatus, inspect_pdf, find_ocr_project};
 
 /// 文本/PDF转换超时常量(秒)
 #[allow(dead_code)]
@@ -385,8 +385,195 @@ fn find_mineru() -> Option<String> {
     None
 }
 
-fn read_pdf_scan(file_path: &str) -> Result<String> {
+/// 使用 pdf-expert-batch-ocr 进行 OCR（macOS + PDF Expert）
+///
+/// 流程：创建临时队列 → 调用 batch_ocr.py → 读取输出
+fn read_pdf_expert_ocr(file_path: &str) -> Result<String> {
+    let ocr_project = match find_ocr_project() {
+        Some(p) => p,
+        None => {
+            eprintln!("  ℹ pdf-expert-batch-ocr 项目未找到，转到 MinerU");
+            return read_pdf_scan_fallback_mineru(file_path);
+        }
+    };
+
+    // 检查必要的文件
+    let batch_ocr_script = ocr_project.join("batch_ocr.py");
+    if !batch_ocr_script.exists() {
+        eprintln!("  ℹ batch_ocr.py 不存在，转到 MinerU");
+        return read_pdf_scan_fallback_mineru(file_path);
+    }
+
+    // 验证环境：Python 3
+    let python_check = Command::new("python3")
+        .arg("--version")
+        .output();
+    if python_check.is_err() {
+        eprintln!("  ℹ Python 3 不可用，转到 MinerU");
+        return read_pdf_scan_fallback_mineru(file_path);
+    }
+
+    // 创建临时工作目录
+    let temp_dir = tempfile::tempdir()
+        .map_err(|e| AppError::Conversion(format!("创建临时目录失败: {}", e)))?;
+    let temp_path = temp_dir.path();
+    let queue_path = temp_path.join("ocr_queue.json");
+    let output_dir = temp_path.join("output");
+    std::fs::create_dir(&output_dir)
+        .map_err(|e| AppError::Conversion(format!("创建输出目录失败: {}", e)))?;
+
+    // 生成 queue.json
+    let queue_json = serde_json::json!({
+        "queue": [{"path": file_path}]
+    });
+    let queue_content = serde_json::to_string_pretty(&queue_json)
+        .map_err(|e| AppError::Conversion(format!("生成 queue JSON 失败: {}", e)))?;
+    std::fs::write(&queue_path, queue_content)
+        .map_err(|e| AppError::Conversion(format!("写入 queue.json 失败: {}", e)))?;
+
+    // 调用 batch_ocr.py
+    eprintln!("  → 调用 pdf-expert-batch-ocr...");
+    let result = Command::new("python3")
+        .args(&[
+            batch_ocr_script.to_str().unwrap_or("batch_ocr.py"),
+            "--queue",
+            queue_path.to_str().unwrap_or(""),
+            "--output-dir",
+            output_dir.to_str().unwrap_or(""),
+        ])
+        .current_dir(&ocr_project)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .map_err(|e| {
+            AppError::Conversion(format!(
+                "pdf-expert-batch-ocr 调用失败: {}\n转到 MinerU 重试",
+                e
+            ))
+        });
+
+    match result {
+        Ok(o) if o.status.success() => {},
+        Ok(o) => {
+            let stderr = String::from_utf8_lossy(&o.stderr);
+            eprintln!("  ℹ pdf-expert-batch-ocr 失败: {}\n  转到 MinerU", stderr);
+            return read_pdf_scan_fallback_mineru(file_path);
+        }
+        Err(e) => {
+            eprintln!("  ℹ pdf-expert-batch-ocr 执行错误: {}\n  转到 MinerU", e);
+            return read_pdf_scan_fallback_mineru(file_path);
+        }
+    }
+
+    // 从输出目录查找最大的 markdown 文件
+    let mut md_files: Vec<PathBuf> = walkdir::WalkDir::new(&output_dir)
+        .into_iter()
+        .filter_map(|e| e.ok())
+        .filter(|e| e.path().extension().map(|ext| ext == "md").unwrap_or(false))
+        .filter(|e| e.metadata().map(|m| m.len() > 10).unwrap_or(false))
+        .map(|e| e.path().to_path_buf())
+        .collect();
+
+    if md_files.is_empty() {
+        eprintln!("  ℹ OCR 输出中未找到 markdown 文件，转到 MinerU");
+        return read_pdf_scan_fallback_mineru(file_path);
+    }
+
+    // 选择最大的文件
+    md_files.sort_by_key(|p| std::fs::metadata(p).map(|m| m.len()).unwrap_or(0));
+    md_files.reverse();
+
+    let text = read_text(
+        md_files[0]
+            .to_str()
+            .ok_or_else(|| AppError::Conversion("OCR 结果路径包含非法字符".to_string()))?,
+    )?;
+
+    eprintln!("  ✓ pdf-expert-batch-ocr OCR 成功");
+    Ok(crate::quality::clean_text(&text))
+}
+
+/// MinerU fallback（当 pdf-expert-batch-ocr 不可用时）
+fn read_pdf_scan_fallback_mineru(file_path: &str) -> Result<String> {
     // 先尝试 MinerU
+    let mineru_path = find_mineru();
+
+    let mineru_path = match mineru_path {
+        Some(p) => p,
+        None => return read_pdf_ocr_fallback(file_path),
+    };
+
+    let temp_dir = tempfile::tempdir()
+        .map_err(|e| AppError::Conversion(format!("创建临时目录失败: {}", e)))?;
+
+    let result = Command::new(&mineru_path)
+        .args([
+            "-p",
+            file_path,
+            "-o",
+            &temp_dir.path().to_string_lossy(),
+            "-l",
+            "ch",
+            "-b",
+            "pipeline",
+            "-m",
+            "ocr",
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .map_err(|e| {
+            AppError::Conversion(format!(
+                "MinerU 转换失败 (预期 {} 秒内完成): {}\n{}",
+                PDF_CONVERT_TIMEOUT,
+                e,
+                crate::scan::ocr_guidance_for_file(file_path)
+            ))
+        })?;
+
+    if !result.status.success() {
+        let stderr = String::from_utf8_lossy(&result.stderr);
+        return Err(AppError::Conversion(format!(
+            "MinerU 转换失败: {}{}",
+            stderr,
+            crate::scan::ocr_guidance_for_file(file_path)
+        )));
+    }
+
+    // 找最大的 .md 文件
+    let mut md_files: Vec<PathBuf> = walkdir::WalkDir::new(temp_dir.path())
+        .into_iter()
+        .filter_map(|e| e.ok())
+        .filter(|e| e.path().extension().map(|ext| ext == "md").unwrap_or(false))
+        .filter(|e| e.metadata().map(|m| m.len() > 10).unwrap_or(false))
+        .map(|e| e.path().to_path_buf())
+        .collect();
+
+    md_files.sort_by_key(|p| std::fs::metadata(p).map(|m| m.len()).unwrap_or(0));
+    md_files.reverse();
+
+    if md_files.is_empty() {
+        return Err(AppError::Conversion(format!(
+            "MinerU 转换后未找到有效的 Markdown 文件{}",
+            crate::scan::ocr_guidance_for_file(file_path)
+        )));
+    }
+
+    let text = read_text(
+        md_files[0]
+            .to_str()
+            .ok_or_else(|| AppError::Conversion("PDF 结果路径包含非法字符".to_string()))?,
+    )?;
+    Ok(crate::quality::clean_text(&text))
+}
+
+fn read_pdf_scan(file_path: &str) -> Result<String> {
+    // 优先尝试 pdf-expert-batch-ocr（若可用）
+    if let Ok(text) = read_pdf_expert_ocr(file_path) {
+        return Ok(text);
+    }
+
+    // fallback: MinerU
     let mineru_path = find_mineru();
 
     let mineru_path = match mineru_path {

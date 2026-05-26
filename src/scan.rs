@@ -269,7 +269,7 @@ fn find_pdf_files(dir: &str, recursive: bool) -> Result<Vec<PathBuf>> {
 }
 
 /// 查找 PDF Expert OCR 项目路径
-fn find_ocr_project() -> Option<PathBuf> {
+pub fn find_ocr_project() -> Option<PathBuf> {
     // 1. 检查 $CARDNOTE_OCR_PROJECT_PATH 环境变量
     if let Ok(path) = std::env::var("CARDNOTE_OCR_PROJECT_PATH") {
         let p = PathBuf::from(&path);
