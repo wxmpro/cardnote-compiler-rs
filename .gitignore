@@ -1,0 +1,51 @@
+# Secrets and local configuration
+.env
+.env.*
+!.env.example
+.cardnote/
+*.key
+*.pem
+*api_key*
+*apikey*
+*token*
+
+# User documents and generated outputs
+output/
+outputs/
+.cardc_cache/
+*.pdf
+*.doc
+*.docx
+*.ppt
+*.pptx
+*.xls
+*.xlsx
+*.epub
+*.mobi
+*.azw3
+*.ocr.md
+*_OCR.pdf
+
+# Temporary conversion artifacts
+.tmp/
+tmp/
+temp/
+*.tmp
+*.bak
+*.log
+
+# Rust build artifacts
+target/
+
+# Python/runtime caches
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+
+# Local editor and OS files
+.DS_Store
+.idea/
+.vscode/
+.claude/
