@@ -268,6 +268,43 @@ fn find_pdf_files(dir: &str, recursive: bool) -> Result<Vec<PathBuf>> {
     Ok(files)
 }
 
+/// 查找 PDF Expert OCR 项目路径
+fn find_ocr_project() -> Option<PathBuf> {
+    // 1. 检查 $CARDNOTE_OCR_PROJECT_PATH 环境变量
+    if let Ok(path) = std::env::var("CARDNOTE_OCR_PROJECT_PATH") {
+        let p = PathBuf::from(&path);
+        if p.exists() {
+            return Some(p);
+        }
+    }
+
+    // 2. 相对路径：从当前项目上一级查找 pdf-expert-batch-ocr
+    if let Ok(cwd) = std::env::current_dir() {
+        let relative = cwd.parent().map(|p| p.join("pdf-expert-batch-ocr"));
+        if let Some(p) = relative {
+            if p.exists() {
+                return Some(p);
+            }
+        }
+    }
+
+    // 3. 在 HOME 下尝试常见位置
+    if let Ok(home) = std::env::var("HOME") {
+        let candidates = [
+            PathBuf::from(&home).join("cardnote-projects/pdf-expert-batch-ocr"),
+            PathBuf::from(&home).join("projects/pdf-expert-batch-ocr"),
+            PathBuf::from(&home).join("code/pdf-expert-batch-ocr"),
+        ];
+        for p in &candidates {
+            if p.exists() {
+                return Some(p.clone());
+            }
+        }
+    }
+
+    None
+}
+
 fn scan_confidence(
     status: &PdfStatus,
     pages: usize,
@@ -593,15 +630,16 @@ fn pct(part: usize, total: usize) -> f32 {
 
 fn print_ocr_guidance(report: &ScanReport) {
     let is_macos = cfg!(target_os = "macos");
-    let ocr_project = Path::new("/Users/xinmin/openmind/03_Own_project/11-pdf-expert-batch-ocr");
-    let has_ocr_project = ocr_project.exists();
+    let ocr_project = find_ocr_project();
+    let has_ocr_project = ocr_project.is_some();
 
     if is_macos && has_ocr_project {
+        let project_path = ocr_project.unwrap();
         println!("     检测到 macOS + OCR 项目可用，建议批量 OCR:");
         println!(
             "       {} cd {}",
             "❯".cyan(),
-            ocr_project.display().to_string().cyan()
+            project_path.display().to_string().cyan()
         );
         println!(
             "       {} python scan_pdfs.py {} --output ocr_queue.json",
@@ -643,8 +681,8 @@ fn print_ocr_guidance(report: &ScanReport) {
 /// 生成扫描版 PDF 的 OCR 指引提示（用于转换失败时）
 pub fn ocr_guidance_for_file(file_path: &str) -> String {
     let is_macos = cfg!(target_os = "macos");
-    let ocr_project = Path::new("/Users/xinmin/openmind/03_Own_project/11-pdf-expert-batch-ocr");
-    let has_ocr_project = ocr_project.exists();
+    let ocr_project = find_ocr_project();
+    let has_ocr_project = ocr_project.is_some();
     let file_name = Path::new(file_path)
         .file_name()
         .and_then(|n| n.to_str())
@@ -656,12 +694,13 @@ pub fn ocr_guidance_for_file(file_path: &str) -> String {
     );
 
     if is_macos && has_ocr_project {
+        let project_path = ocr_project.unwrap();
         msg.push_str(&format!(
             "\n     OCR 流水线项目可用，运行以下命令:\n\
              \x20      cd {}\n\
              \x20      python scan_pdfs.py {} --output ocr_queue.json\n\
              \x20      python batch_ocr.py --queue ocr_queue.json --output-dir ./output\n",
-            ocr_project.display(),
+            project_path.display(),
             Path::new(file_path)
                 .parent()
                 .unwrap_or(Path::new("."))
@@ -685,7 +724,11 @@ pub fn ocr_pipeline_available() -> bool {
     if !cfg!(target_os = "macos") {
         return false;
     }
-    Path::new("/Users/xinmin/openmind/03_Own_project/11-pdf-expert-batch-ocr/scan_pdfs.py").exists()
+    if let Some(project_path) = find_ocr_project() {
+        project_path.join("scan_pdfs.py").exists()
+    } else {
+        false
+    }
 }
 
 /// PyMuPDF fallback：当 lopdf 解析失败时使用（对损坏/非标准 PDF 更宽容）

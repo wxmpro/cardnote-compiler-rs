@@ -346,23 +346,42 @@ print("\n\n".join(pages))
 ///
 /// 查找 mineru 可执行文件路径
 fn find_mineru() -> Option<String> {
-    // 1. 尝试 PATH 中的 mineru
+    // 1. 检查 $MINERU_PATH 环境变量
+    if let Ok(path) = std::env::var("MINERU_PATH") {
+        if std::path::Path::new(&path).exists() {
+            return Some(path);
+        }
+    }
+
+    // 2. 尝试 PATH 中的 mineru
     if let Ok(out) = Command::new("which").arg("mineru").output()
         && out.status.success()
     {
         return Some(String::from_utf8_lossy(&out.stdout).trim().to_string());
     }
-    // 2. 尝试常见的虚拟环境路径
-    let candidates = [
-        "/Users/xinmin/openmind/.venv/bin/mineru",
-        "/Users/xinmin/.venv/bin/mineru",
-        "/Users/xinmin/.local/bin/mineru",
-    ];
-    for path in &candidates {
+
+    // 3. 尝试标准安装位置（相对于 home）
+    if let Ok(home) = std::env::var("HOME") {
+        let candidates = [
+            format!("{}/.venv/bin/mineru", home),
+            format!("{}/.local/bin/mineru", home),
+            format!("{}/venv/bin/mineru", home),
+        ];
+        for path in &candidates {
+            if std::path::Path::new(path).exists() {
+                return Some(path.clone());
+            }
+        }
+    }
+
+    // 4. 尝试系统标准路径
+    let system_paths = ["/usr/local/bin/mineru", "/opt/mineru/bin/mineru"];
+    for path in &system_paths {
         if std::path::Path::new(path).exists() {
             return Some(path.to_string());
         }
     }
+
     None
 }
 
