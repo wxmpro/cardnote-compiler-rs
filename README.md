@@ -58,7 +58,7 @@ python3 --version   # 应输出 3.11.x 或更高
 
 ```bash
 # 进入项目目录
-cd /Users/xinmin/openmind/03_Own_project/01-cardnote/03-项目/cardnote-compiler-rs
+cd ./cardnote-compiler-rs
 
 # 使用 uv 安装（推荐）
 uv pip install pymupdf markitdown
@@ -130,11 +130,11 @@ LLM_BASE_URL=https://api.deepseek.com/v1
 
 ```bash
 # Step 1: 直接编译
-cardc ./我的文档.pdf
+cardc ./my-document.pdf
 
 # Step 2: 查看输出
 ls ./output/
-#  └── 20260523_人生模式：识别并优化你的核心认知/
+#  └── 20260523_my-document/
 #       ├── summary.md    # AI 摘要
 #       ├── all_cards.md  # 全部卡片汇总
 #       ├── graph.mmd     # 关系图谱（Mermaid 格式）
@@ -146,16 +146,16 @@ ls ./output/
 
 ```bash
 # Step 1: 先扫描，检测哪些需要 OCR
-cardc scan ~/我的PDF文件夹
+cardc scan ~/my-pdf-folder
 
 # Step 2: 如果有"需 OCR"的文件，按提示运行 OCR
 # （macOS + PDF Expert 用户）
-cd /Users/xinmin/openmind/03_Own_project/11-pdf-expert-batch-ocr
-python scan_pdfs.py ~/我的PDF文件夹 --output ocr_queue.json
+cd ../pdf-expert-batch-ocr
+python scan_pdfs.py ~/my-pdf-folder --output ocr_queue.json
 python batch_ocr.py --queue ocr_queue.json --output-dir ./output
 
 # Step 3: OCR 完成后，编译 *_OCR.pdf 文件
-cardc ~/我的PDF文件夹/某文档_OCR.pdf
+cardc ~/my-pdf-folder/document_OCR.pdf
 ```
 
 ### 4.3 多文档策展
@@ -239,7 +239,7 @@ cardc scan . -t 50
 
 下一步建议
    检测到 macOS + OCR 项目可用，建议批量 OCR:
-     ❯ cd /Users/xinmin/.../11-pdf-expert-batch-ocr
+     ❯ cd ../pdf-expert-batch-ocr
      ❯ python scan_pdfs.py . --output ocr_queue.json
      ❯ python batch_ocr.py --queue ocr_queue.json --output-dir ./output
 
@@ -340,13 +340,13 @@ cardc init
 
 ```bash
 # 1. 进入 OCR 项目目录
-cd /Users/xinmin/openmind/03_Own_project/11-pdf-expert-batch-ocr
+cd ../pdf-expert-batch-ocr
 
 # 2. 安装 Python 依赖
 uv pip install -r requirements.txt
 
 # 3. 预扫描（检测哪些需要 OCR）
-python scan_pdfs.py ~/你的PDF文件夹 --output ocr_queue.json
+python scan_pdfs.py ~/your-pdf-folder --output ocr_queue.json
 
 # 4. 批量 OCR（自动断点续传）
 python batch_ocr.py \
@@ -356,7 +356,7 @@ python batch_ocr.py \
 
 # 5. 等待完成，输出 *_OCR.pdf 文件
 # 6. 用 cardc 编译 OCR 后的文件
-cardc ./output/某文档_OCR.pdf
+cardc ./output/document_OCR.pdf
 ```
 
 **特性**：
@@ -432,10 +432,10 @@ cardc ./doc.pdf --provider openai --model gpt-4o --api-key sk-xxx
 
 ```bash
 # 方法1: 使用完整路径
-/Users/xinmin/openmind/03_Own_project/01-cardnote/03-项目/cardnote-compiler-rs/target/release/cardc
+./target/release/cardc
 
 # 方法2: 创建软链接
-ln -s /Users/xinmin/openmind/03_Own_project/01-cardnote/03-项目/cardnote-compiler-rs/target/release/cardc ~/.local/bin/cardc
+ln -s $(pwd)/target/release/cardc ~/.local/bin/cardc
 
 # 方法3: 临时使用 cargo run
 cargo run -- ./document.pdf
