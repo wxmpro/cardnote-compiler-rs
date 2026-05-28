@@ -391,18 +391,41 @@ pub async fn save_cards_by_type(dir: &Path, cards: &[Card]) -> Result<()> {
     Ok(())
 }
 
-/// 创建输出目录
+/// 创建输出目录，目录名冲突时自动追加递增序号
 async fn create_output_dir(base: &str, title: Option<&str>) -> Result<std::path::PathBuf> {
+    let dir = resolve_unique_output_dir(base, title);
+    fs::create_dir_all(&dir).await?;
+    Ok(dir)
+}
+
+/// 生成唯一的输出目录路径（处理时间戳冲突）
+fn resolve_unique_output_dir(base: &str, title: Option<&str>) -> std::path::PathBuf {
     let timestamp = Local::now().format(TIMESTAMP_FORMAT).to_string();
-    let dir_name = if let Some(t) = title {
+    let base_name = if let Some(t) = title {
         let safe = sanitize_filename(t);
         format!("{}_{}", timestamp, safe)
     } else {
         timestamp
     };
-    let dir = Path::new(base).join(&dir_name);
-    fs::create_dir_all(&dir).await?;
-    Ok(dir)
+    resolve_unique_output_dir_raw(base, &base_name)
+}
+
+/// 内部实现：基于固定 base_name 解决目录冲突
+fn resolve_unique_output_dir_raw(base: &str, base_name: &str) -> std::path::PathBuf {
+    let base_path = Path::new(base);
+    let dir = base_path.join(base_name);
+    if !dir.exists() {
+        return dir;
+    }
+
+    let mut counter = 1;
+    loop {
+        let candidate = base_path.join(format!("{}_{:03}", base_name, counter));
+        if !candidate.exists() {
+            return candidate;
+        }
+        counter += 1;
+    }
 }
 
 /// 卡片质量报告转 Markdown
@@ -569,4 +592,84 @@ fn sanitize_filename(name: &str) -> String {
     name.replace(['/', '\\', ':', '*', '?', '"', '<', '>', '|'], "_")
         .trim()
         .to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    #[test]
+    fn test_resolve_unique_no_conflict() {
+        let temp = tempfile::tempdir().unwrap();
+        let base = temp.path().to_str().unwrap();
+        let dir = resolve_unique_output_dir_raw(base, "20260528_120000_测试");
+        assert!(dir.to_string_lossy().ends_with("20260528_120000_测试"));
+    }
+
+    #[test]
+    fn test_resolve_unique_conflict_once() {
+        let temp = tempfile::tempdir().unwrap();
+        let base = temp.path().to_str().unwrap();
+
+        let dir1 = resolve_unique_output_dir_raw(base, "conflict");
+        fs::create_dir_all(&dir1).unwrap();
+
+        let dir2 = resolve_unique_output_dir_raw(base, "conflict");
+        assert_ne!(dir1, dir2);
+        assert!(dir2.to_string_lossy().ends_with("conflict_001"));
+    }
+
+    #[test]
+    fn test_resolve_unique_conflict_multiple() {
+        let temp = tempfile::tempdir().unwrap();
+        let base = temp.path().to_str().unwrap();
+
+        for i in 0..3 {
+            let dir = resolve_unique_output_dir_raw(base, "multi");
+            fs::create_dir_all(&dir).unwrap();
+            if i == 0 {
+                assert!(dir.to_string_lossy().ends_with("multi"));
+            } else {
+                assert!(dir.to_string_lossy().ends_with(&format!("multi_{:03}", i)));
+            }
+        }
+
+        let dir4 = resolve_unique_output_dir_raw(base, "multi");
+        assert!(dir4.to_string_lossy().ends_with("multi_003"));
+    }
+
+    #[test]
+    fn test_resolve_unique_gaps_reused() {
+        let temp = tempfile::tempdir().unwrap();
+        let base = temp.path().to_str().unwrap();
+
+        // 创建 base, _001, _003（跳过 _002）
+        fs::create_dir_all(resolve_unique_output_dir_raw(base, "gap")).unwrap();
+        fs::create_dir_all(
+            resolve_unique_output_dir_raw(base, "gap")
+                .parent()
+                .unwrap()
+                .join("gap_001"),
+        )
+        .unwrap();
+        fs::create_dir_all(
+            resolve_unique_output_dir_raw(base, "gap")
+                .parent()
+                .unwrap()
+                .join("gap_003"),
+        )
+        .unwrap();
+
+        let next = resolve_unique_output_dir_raw(base, "gap");
+        // 应取 _002（第一个不存在的序号）
+        assert!(next.to_string_lossy().ends_with("gap_002"));
+    }
+
+    #[test]
+    fn test_sanitize_filename() {
+        assert_eq!(sanitize_filename("a/b:c"), "a_b_c");
+        assert_eq!(sanitize_filename("  标题  "), "标题");
+        assert_eq!(sanitize_filename("test|file?"), "test_file_");
+    }
 }

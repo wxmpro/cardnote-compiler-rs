@@ -21,6 +21,11 @@ All notable changes to cardnote-compiler-rs are documented here.
   - `typo_fix()` 改为返回 `usize`（修复数量）
   - `save_cards_by_type()` 累加修复数量，排版修复消息现在正确输出
 
+- **curation 子文档时间戳冲突修复**：`create_output_dir()` 同一秒内重复调用时目录名冲突
+  - 新增 `resolve_unique_output_dir()` + `resolve_unique_output_dir_raw()`
+  - 目录名冲突时自动追加 `_001`, `_002` 递增序号
+  - 新增 4 个边界测试（单次冲突、多次冲突、序号间隙复用）
+
 ## [0.1.1] - 2026-05-27
 
 ### Added
