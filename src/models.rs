@@ -135,11 +135,11 @@ impl Card {
             "".to_string(),
         ];
         if !self.reference.is_empty() {
-            lines.push(format!("**参考：** {}", self.reference));
+            lines.push(format!("**ref：** {}", self.reference));
             lines.push("".to_string());
         }
         self.append_traceability_markdown(&mut lines);
-        lines.push(format!("**唯一编码：** {}", self.unique_id));
+        lines.push(format!("**uuid：** {}", self.unique_id));
         lines.push("".to_string());
         lines.push("***".to_string());
         lines.push("".to_string());
@@ -180,20 +180,36 @@ impl Card {
         }
     }
 
-    /// 应用中文排版修复
-    pub fn typo_fix(&mut self) {
+    /// 应用中文排版修复，返回修复数量
+    pub fn typo_fix(&mut self) -> usize {
         use crate::quality::typo_lint;
-        self.title = typo_lint::typo_lint(&self.title).fixed_text;
-        self.content = typo_lint::typo_lint(&self.content).fixed_text;
+        let mut count = 0;
+
+        let title_result = typo_lint::typo_lint(&self.title);
+        count += title_result.issues.len();
+        self.title = title_result.fixed_text;
+
+        let content_result = typo_lint::typo_lint(&self.content);
+        count += content_result.issues.len();
+        self.content = content_result.fixed_text;
+
         if !self.original_text.is_empty() {
-            self.original_text = typo_lint::typo_lint(&self.original_text).fixed_text;
+            let result = typo_lint::typo_lint(&self.original_text);
+            count += result.issues.len();
+            self.original_text = result.fixed_text;
         }
         if !self.source.is_empty() {
-            self.source = typo_lint::typo_lint(&self.source).fixed_text;
+            let result = typo_lint::typo_lint(&self.source);
+            count += result.issues.len();
+            self.source = result.fixed_text;
         }
         if !self.paraphrase.is_empty() {
-            self.paraphrase = typo_lint::typo_lint(&self.paraphrase).fixed_text;
+            let result = typo_lint::typo_lint(&self.paraphrase);
+            count += result.issues.len();
+            self.paraphrase = result.fixed_text;
         }
+
+        count
     }
 
     fn to_quote_markdown(&self) -> String {
@@ -226,11 +242,11 @@ impl Card {
             lines.push("".to_string());
         }
         if !self.reference.is_empty() {
-            lines.push(format!("**参考：** {}", self.reference));
+            lines.push(format!("**ref：** {}", self.reference));
             lines.push("".to_string());
         }
         self.append_traceability_markdown(&mut lines);
-        lines.push(format!("**唯一编码：** {}", self.unique_id));
+        lines.push(format!("**uuid：** {}", self.unique_id));
         lines.push("".to_string());
         lines.push("***".to_string());
         lines.push("".to_string());
@@ -264,6 +280,15 @@ pub struct KnowledgeGraph {
     pub relations: Vec<Relation>,
 }
 
+/// Mermaid 安全转义：处理会破坏 Mermaid 语法的特殊字符
+fn mermaid_escape(text: &str) -> String {
+    text.replace('"', "'") // 双引号 → 单引号（避免中断 Mermaid 字符串）
+        .replace('#', "\\#") // 井号 → 转义（避免被误认为注释）
+        .replace('\r', " ")
+        .replace('\n', " ")
+        .replace('\t', " ")
+}
+
 impl KnowledgeGraph {
     pub fn to_mermaid(&self) -> String {
         let mut lines = vec!["graph TD".to_string()];
@@ -284,15 +309,15 @@ impl KnowledgeGraph {
 
         // 输出节点定义（带标签）
         for (name, id) in &node_map {
-            let safe_label = name.replace('"', "'");
-            lines.push(format!("    {}[\"{}\"]\n", id, safe_label));
+            let safe_label = mermaid_escape(name);
+            lines.push(format!("    {}[\"{}\"]", id, safe_label));
         }
 
         // 输出关系
         for rel in &self.relations {
             let source_id = node_map.get(&rel.source).unwrap_or(&rel.source);
             let target_id = node_map.get(&rel.target).unwrap_or(&rel.target);
-            let safe_type = rel.relation_type.replace('"', "'");
+            let safe_type = mermaid_escape(&rel.relation_type);
             lines.push(format!(
                 "    {} -- \"{}\" --> {}",
                 source_id, safe_type, target_id
@@ -516,8 +541,8 @@ mod tests {
         let md = card.to_markdown();
         assert!(md.contains("**标题：** 标题A"));
         assert!(md.contains("正文内容A"));
-        assert!(md.contains("**参考：** 来源A"));
-        assert!(md.contains("**唯一编码：** 20240101120000"));
+        assert!(md.contains("**ref：** 来源A"));
+        assert!(md.contains("**uuid：** 20240101120000"));
         assert!(md.contains("# 新知卡"));
     }
 
@@ -566,7 +591,7 @@ mod tests {
         // 新格式使用安全的节点ID (n0, n1, ...) 而不是直接使用实体名称
         assert!(mermaid.contains("-- \"关系A\" -->"));
         assert!(mermaid.contains("-- \"值A'\" -->")); // 双引号被替换为单引号
-        // 验证节点标签包含中文实体名称
+        // 验证节点标签包含中文实体名称（无多余换行）
         assert!(mermaid.contains("[\"A\"]"));
         assert!(mermaid.contains("[\"B\"]"));
         assert!(mermaid.contains("[\"C\"]"));
@@ -589,5 +614,84 @@ mod tests {
         assert!(md.contains("2. 要点B"));
         assert!(md.contains("## 结构"));
         assert!(md.contains("结构A"));
+    }
+
+    // ── Mermaid 安全转义边界测试 ──
+
+    #[test]
+    fn test_mermaid_escape_double_quote() {
+        assert_eq!(mermaid_escape("a\"b"), "a'b");
+    }
+
+    #[test]
+    fn test_mermaid_escape_hash() {
+        assert_eq!(mermaid_escape("#新知卡"), "\\#新知卡");
+    }
+
+    #[test]
+    fn test_mermaid_escape_newline() {
+        assert_eq!(mermaid_escape("第一行\n第二行"), "第一行 第二行");
+    }
+
+    #[test]
+    fn test_mermaid_escape_crlf() {
+        assert_eq!(mermaid_escape("A\r\nB"), "A  B");
+    }
+
+    #[test]
+    fn test_mermaid_escape_tab() {
+        assert_eq!(mermaid_escape("A\tB"), "A B");
+    }
+
+    #[test]
+    fn test_mermaid_escape_combined() {
+        let input = "#卡片\"名\"\n含换行";
+        assert_eq!(mermaid_escape(input), "\\#卡片'名' 含换行");
+    }
+
+    #[test]
+    fn test_mermaid_graph_with_hash_in_node() {
+        let graph = KnowledgeGraph {
+            entities: vec![],
+            relations: vec![Relation {
+                source: "#新知卡".to_string(),
+                target: "B".to_string(),
+                relation_type: "包含".to_string(),
+                evidence: "".to_string(),
+            }],
+        };
+        let mermaid = graph.to_mermaid();
+        // 节点标签中的 # 应被转义为 \#
+        assert!(mermaid.contains("[\"\\#新知卡\"]"));
+        // 不应出现未转义的 #（会被 Mermaid 解析为注释）
+        assert!(!mermaid.contains("[#新知卡"));
+    }
+
+    #[test]
+    fn test_mermaid_graph_with_newline_in_relation() {
+        let graph = KnowledgeGraph {
+            entities: vec![],
+            relations: vec![Relation {
+                source: "A".to_string(),
+                target: "B".to_string(),
+                relation_type: "关系\n含换行".to_string(),
+                evidence: "".to_string(),
+            }],
+        };
+        let mermaid = graph.to_mermaid();
+        // 关系文本中的换行应被替换为空格
+        assert!(mermaid.contains("-- \"关系 含换行\" -->"));
+        // 不应出现原始换行符在关系文本中
+        assert!(!mermaid.contains("-- \"关系\n含换行\" -->"));
+    }
+
+    #[test]
+    fn test_mermaid_graph_empty() {
+        let graph = KnowledgeGraph {
+            entities: vec![],
+            relations: vec![],
+        };
+        let mermaid = graph.to_mermaid();
+        assert_eq!(mermaid, "graph TD");
     }
 }

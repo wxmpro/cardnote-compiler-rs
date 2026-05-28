@@ -27,7 +27,7 @@ use crate::config::{
     is_pdf_format, is_text_format,
 };
 use crate::error::{AppError, Result};
-use crate::scan::{PdfStatus, inspect_pdf, find_ocr_project};
+use crate::scan::{PdfStatus, find_ocr_project, inspect_pdf};
 
 /// 文本/PDF转换超时常量(秒)
 #[allow(dead_code)]
@@ -405,9 +405,7 @@ fn read_pdf_expert_ocr(file_path: &str) -> Result<String> {
     }
 
     // 验证环境：Python 3
-    let python_check = Command::new("python3")
-        .arg("--version")
-        .output();
+    let python_check = Command::new("python3").arg("--version").output();
     if python_check.is_err() {
         eprintln!("  ℹ Python 3 不可用，转到 MinerU");
         return read_pdf_scan_fallback_mineru(file_path);
@@ -453,7 +451,7 @@ fn read_pdf_expert_ocr(file_path: &str) -> Result<String> {
         });
 
     match result {
-        Ok(o) if o.status.success() => {},
+        Ok(o) if o.status.success() => {}
         Ok(o) => {
             let stderr = String::from_utf8_lossy(&o.stderr);
             eprintln!("  ℹ pdf-expert-batch-ocr 失败: {}\n  转到 MinerU", stderr);

@@ -2,6 +2,25 @@
 
 All notable changes to cardnote-compiler-rs are documented here.
 
+## [0.1.2] - 2026-05-28
+
+### Fixed
+- **Mermaid 中文实体安全性修复**：`mermaid_escape()` 函数安全转义 Mermaid 语法敏感字符
+  - 转义 `"` → `'`（避免中断字符串）
+  - 转义 `#` → `\#`（避免被误认为注释）
+  - 转义 `\r`, `\n`, `\t` → 空格（避免破坏单行语法）
+  - 节点标签和关系文本均应用转义
+  - 新增 7 个边界测试覆盖中文特殊字符场景
+
+- **Card Markdown 字段命名对齐**：`to_default_markdown()` / `to_quote_markdown()` 输出字段统一
+  - `**参考：**` → `**ref：**`
+  - `**唯一编码：**` → `**uuid：**`
+  - 与 P2 字段命名统一（prompts 已改，代码输出未改）对齐
+
+- **`total_fixes` 逻辑修复**：`output.rs:380` 变量声明后永不修改
+  - `typo_fix()` 改为返回 `usize`（修复数量）
+  - `save_cards_by_type()` 累加修复数量，排版修复消息现在正确输出
+
 ## [0.1.1] - 2026-05-27
 
 ### Added

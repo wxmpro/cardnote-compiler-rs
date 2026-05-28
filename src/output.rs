@@ -368,16 +368,15 @@ async fn save_single_to_dir(result: &CompilationResult, output_dir: &Path) -> Re
 /// 按类型保存卡片
 pub async fn save_cards_by_type(dir: &Path, cards: &[Card]) -> Result<()> {
     let mut by_type: HashMap<String, Vec<Card>> = HashMap::new();
+    let mut total_fixes = 0;
     for card in cards {
         let mut cloned = card.clone();
-        cloned.typo_fix();
+        total_fixes += cloned.typo_fix();
         by_type
             .entry(card.card_type.to_string())
             .or_default()
             .push(cloned);
     }
-
-    let total_fixes = 0;
     for (card_type, cards_of_type) in by_type {
         let filename = format!("{}.md", card_type);
         let path = dir.join(&filename);
