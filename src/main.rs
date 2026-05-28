@@ -18,7 +18,7 @@ use cardnote_compiler::scan::PdfStatus;
 #[derive(Parser)]
 #[command(name = "cardc")]
 #[command(about = "CardNote Compiler — 把文档编译成知识卡片 (Rust 版)")]
-#[command(version = "0.1.0")]
+#[command(version = env!("CARGO_PKG_VERSION"))]
 struct Cli {
     #[command(subcommand)]
     command: Option<Commands>,
