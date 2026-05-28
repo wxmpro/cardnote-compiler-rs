@@ -26,6 +26,14 @@ All notable changes to cardnote-compiler-rs are documented here.
   - 目录名冲突时自动追加 `_001`, `_002` 递增序号
   - 新增 4 个边界测试（单次冲突、多次冲突、序号间隙复用）
 
+- **`CARDNOTE_PROMPTS_DIR` 环境变量**：支持 prompts 目录自定义位置
+  - 优先级：$CARDNOTE_PROMPTS_DIR > exe 位置推断 > 工作目录 ./prompts
+  - 解决二进制单独分发时 prompts 找不到的问题
+
+- **策展模式输出路径对齐**：`compile_book()` 新增 `output_dir` 参数
+  - 替换 `pipeline.rs:356` 硬编码的 `"./output"`
+  - 现在尊重 `--output` / `-o` CLI 参数
+
 ## [0.1.1] - 2026-05-27
 
 ### Added

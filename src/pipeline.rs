@@ -187,22 +187,28 @@ impl Pipeline {
         let mut prompts = HashMap::new();
 
         // 尝试多个候选路径查找 prompts 目录
+        let mut candidates: Vec<PathBuf> = Vec::new();
+
+        // 1. 环境变量优先（支持项目移动或二进制单独分发）
+        if let Ok(env_path) = std::env::var("CARDNOTE_PROMPTS_DIR") {
+            candidates.push(PathBuf::from(env_path));
+        }
+
+        // 2. 从 exe 位置推断
         let exe_dir = std::env::current_exe()
             .ok()
             .and_then(|p| p.parent().map(|p| p.to_path_buf()));
-        let candidates: Vec<PathBuf> = if let Some(ref dir) = exe_dir {
-            vec![
-                dir.join("../prompts"),             // exe 旁（如 bin/）
-                dir.join("../../prompts"),          // target/release/ 等深层目录
-                dir.join("../../../prompts"),       // 更深一层
-                Path::new("prompts").to_path_buf(), // 运行时工作目录
-            ]
-        } else {
-            vec![Path::new("prompts").to_path_buf()]
-        };
+        if let Some(ref dir) = exe_dir {
+            candidates.push(dir.join("../prompts")); // exe 旁（如 bin/）
+            candidates.push(dir.join("../../prompts")); // target/release/ 等
+            candidates.push(dir.join("../../../prompts")); // 更深一层
+        }
 
-        for dir in candidates {
-            prompts = load_prompts_from_dir(&dir);
+        // 3. 运行时工作目录
+        candidates.push(Path::new("prompts").to_path_buf());
+
+        for dir in &candidates {
+            prompts = load_prompts_from_dir(dir);
             if !prompts.is_empty() {
                 break;
             }
@@ -278,7 +284,12 @@ impl Pipeline {
     }
 
     /// 多文档策展编译
-    pub async fn compile_book(&self, documents: Vec<Document>, book_title: &str) -> Result<String> {
+    pub async fn compile_book(
+        &self,
+        documents: Vec<Document>,
+        book_title: &str,
+        output_dir: &str,
+    ) -> Result<String> {
         println!("{}", "=".repeat(60));
         println!("多文档知识编译启动");
         println!("{}", "=".repeat(60));
@@ -353,7 +364,7 @@ impl Pipeline {
             cross_relations: &cross_relations,
             doc_results: &all_results,
         };
-        let output_path = output::save_curation(&curation_data, "./output", book_title).await?;
+        let output_path = output::save_curation(&curation_data, output_dir, book_title).await?;
 
         println!("\n结果已保存到: {}", output_path);
         Ok(output_path)

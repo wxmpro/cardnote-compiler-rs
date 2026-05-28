@@ -298,7 +298,9 @@ async fn run() -> anyhow::Result<()> {
             });
         }
 
-        let output_path = pipeline.compile_book(documents, &book_title).await?;
+        let output_path = pipeline
+            .compile_book(documents, &book_title, &cli.output)
+            .await?;
         println!("\n结果已保存到: {}", output_path);
     } else {
         // 单篇编译
