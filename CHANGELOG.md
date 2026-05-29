@@ -2,6 +2,23 @@
 
 All notable changes to cardnote-compiler-rs are documented here.
 
+## [0.1.12] - 2026-05-29
+
+### Fixed
+
+- **修复 PDF 书名提取误判**（`converter.rs` `extract_pdf_metadata`）
+  - **根因**：`extract_pdf_metadata` 无条件信任 PDF Info 字典的 Title 字段，但 PDF 生成工具常把页码标记（如 `## 第 1 页`、`Page 1`）填入 Title，导致输出目录名变成乱码。
+  - **修复**：提取 Title 后增加 `looks_like_page_marker()` 启发式校验，过滤以下模式：
+    1. 以 `#` 开头（Markdown 标题标记）
+    2. 包含 `第 x 页/章/节/篇`
+    3. 英文 `Page/Chapter/Section/Part + 数字`
+    4. 纯数字
+    5. 少于 3 个字符
+  - **影响**：《阅读的心智》编译实测，目录名从 `2026..._## 第 1 页` 恢复为 `2026..._阅读的心智`。
+
+### Changed
+- **Cargo.toml**：版本号 `0.1.11` → `0.1.12`
+
 ## [0.1.11] - 2026-05-29
 
 ### Fixed

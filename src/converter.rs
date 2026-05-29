@@ -1068,7 +1068,12 @@ pub fn extract_pdf_metadata(file_path: &str) -> BookMetadata {
                     if let Ok(info_dict) = info_obj.as_dict() {
                         // Title
                         if let Ok(obj) = info_dict.get(b"Title") {
-                            meta.title = pdf_string_value(obj);
+                            let raw = pdf_string_value(obj);
+                            // [v0.1.12] 启发式校验：过滤掉看起来像页码/章节标记的 Title
+                            // PDF 生成工具常把 "## 第 1 页"、"Page 1" 等填入 Title 字段
+                            if !looks_like_page_marker(&raw) {
+                                meta.title = raw;
+                            }
                         }
                         // Author
                         if let Ok(obj) = info_dict.get(b"Author") {
@@ -1110,6 +1115,48 @@ fn pdf_string_value(obj: &lopdf::Object) -> String {
         lopdf::Object::Name(n) => String::from_utf8_lossy(n).to_string(),
         _ => String::new(),
     }
+}
+
+/// 启发式校验：判断字符串是否看起来像页码/章节标记而非真正的书名
+///
+/// 常见误判模式：
+/// - "## 第 1 页"、"第 1 章"、"第一章"
+/// - "Page 1"、"Chapter 1"
+/// - "1"、"01" 等纯数字
+fn looks_like_page_marker(s: &str) -> bool {
+    let trimmed = s.trim();
+    if trimmed.is_empty() {
+        return true;
+    }
+
+    // 模式1：以 # 开头（Markdown 标题标记）
+    if trimmed.starts_with('#') {
+        return true;
+    }
+
+    // 模式2：包含 "第 x 页" / "第 x 章"
+    let page_chapter = regex::Regex::new(r"第\s*\d+\s*[页章节篇]").unwrap();
+    if page_chapter.is_match(trimmed) {
+        return true;
+    }
+
+    // 模式3：英文 Page / Chapter + 数字
+    let eng_marker = regex::Regex::new(r"(?i)^(Page|Chapter|Section|Part)\s*\d+").unwrap();
+    if eng_marker.is_match(trimmed) {
+        return true;
+    }
+
+    // 模式4：纯数字（如 "1"、"01"）
+    if trimmed.chars().all(|c| c.is_ascii_digit()) {
+        return true;
+    }
+
+    // 模式5：极短字符串（< 3 字符，不太可能是书名）
+    if trimmed.chars().count() < 3 {
+        return true;
+    }
+
+    false
 }
 
 /// 从文本中用正则提取书名
