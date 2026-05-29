@@ -2,7 +2,22 @@
 
 All notable changes to cardnote-compiler-rs are documented here.
 
-## [0.1.5] - 2026-05-29
+## [0.1.6] - 2026-05-29
+
+### Fixed
+
+- **剔除 evidence 字段的强制检查**（`card_lint.rs`）
+  - 根因：12 个 prompt 文件均未要求 `evidence` 字段，但代码对所有卡片强制检查 `evidence` 是否为空，导致 504 张卡片全部被过滤（0 张通过）。
+  - 修复：注释掉 `check_evidence_traceability()` 调用；从 `is_valid` 致命问题列表中移除 `MissingEvidence` 和 `EvidenceNotFound`。
+  - 影响：evidence 恢复为可选增强字段，有则加分，无则不影响卡片通过。
+
+- **放宽"标题与内容不匹配"检查**（`card_lint.rs`）
+  - 根因：原逻辑为纯字符级精确匹配（要求标题关键词完整出现在内容中），但 LLM 生成的标题是对内容的概括，措辞不同是正常现象。导致 154 张卡片被误报为"不匹配"。
+  - 修复：新策略为"去除所有中英文标点后，按2-6字滑动窗口检查"——只要标题中有任意2字以上连续片段出现在内容中，即判定为匹配。优先检查较长片段（6字→2字），减少误判。
+  - 影响：大幅降低误报率，同时保留对严重离题标题的检测能力。
+
+### Changed
+- **Cargo.toml**：版本号 `0.1.5` → `0.1.6`
 
 ### Added
 - **./documents/ 文件夹**：存放用户上传/要求处理的原始文档

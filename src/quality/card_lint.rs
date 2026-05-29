@@ -122,7 +122,7 @@ pub fn lint_card(card: &Card, config: &CardLintConfig) -> CardLintResult {
 /// 结合源文本检查单张卡片质量
 pub fn lint_card_with_source(
     card: &Card,
-    source_text: &str,
+    _source_text: &str,
     config: &CardLintConfig,
 ) -> CardLintResult {
     let mut issues = Vec::new();
@@ -159,43 +159,55 @@ pub fn lint_card_with_source(
         });
     }
 
-    // 规则5: 标题与内容匹配度
+    // 规则5: 标题与内容匹配度（v0.1.6 放宽版）
+    // LLM 生成的标题是对内容的概括，措辞不同是正常现象。
+    // 原逻辑过于严格（要求关键词精确匹配），导致大量误报。
+    // 新策略：去除所有中英文标点后，只要标题中有任意2字以上连续片段
+    // 出现在内容中，即判定为匹配。
     if !card.title.is_empty() && !card.content.is_empty() {
-        let title_in_content = card.content.contains(&card.title)
-            || card.title.chars().take(4).all(|c| card.content.contains(c));
-        if !title_in_content {
-            // 提取标题关键词：按空格/标点/人名分隔符分割
-            let title_keywords: Vec<&str> = card
+        let title_clean = card.title.trim();
+        let mut matched = false;
+
+        // 策略1: 标题完整出现在内容中
+        if card.content.contains(title_clean) {
+            matched = true;
+        } else {
+            // 策略2: 去除所有中英文标点后，按2-6字滑动窗口检查
+            // 优先检查较长片段（减少误判），逐步降级到2字片段
+            let title_chars: Vec<char> = card
                 .title
-                .split(|c: char| {
-                    c == ' ' || c == '，' || c == '、' || c == '·' || c == '：' || c == ':'
+                .chars()
+                .filter(|&c| {
+                    // 保留中英文文字、数字；过滤常见标点
+                    !matches!(
+                        c,
+                        ' ' | '\u{3000}' | '\u{3001}' | '\u{3002}' | '\u{FF0C}' | '\u{FF1A}'
+                            | '\u{FF1B}' | '\u{FF01}' | '\u{FF1F}' | '\u{201C}' | '\u{201D}'
+                            | '\u{2018}' | '\u{2019}' | '\u{FF08}' | '\u{FF09}' | '\u{300A}'
+                            | '\u{300B}' | '\u{3008}' | '\u{3009}' | '\u{00B7}' | '"' | '\''
+                            | '(' | ')' | '[' | ']' | '{' | '}' | '<' | '>'
+                    )
                 })
-                .filter(|s| s.chars().count() >= 2)
                 .collect();
 
-            // 策略1：至少有一个关键词在内容中
-            let has_keyword = title_keywords.iter().any(|kw| card.content.contains(kw));
-
-            // 策略2：对于"XX的YY"类标题，检查YY部分是否在内容中
-            let has_suffix = if let Some(pos) = card.title.rfind('的') {
-                let suffix = &card.title[pos + '的'.len_utf8()..];
-                suffix.chars().count() >= 2 && card.content.contains(suffix)
-            } else {
-                false
-            };
-
-            // 策略3：标题去掉冒号/破折号后的核心部分是否在内容中
-            let core_part = card
-                .title
-                .split(['：', ':', '-', '─'])
-                .next()
-                .unwrap_or("")
-                .trim();
-            let has_core = core_part.chars().count() >= 2 && card.content.contains(core_part);
-
-            if !has_keyword && !has_suffix && !has_core {
-                issues.push(LintIssue::TitleContentMismatch);
+            for window in (2..=6).rev() {
+                if title_chars.len() >= window {
+                    for i in 0..=title_chars.len() - window {
+                        let fragment: String = title_chars[i..i + window].iter().collect();
+                        if card.content.contains(&fragment) {
+                            matched = true;
+                            break;
+                        }
+                    }
+                    if matched {
+                        break;
+                    }
+                }
             }
+        }
+
+        if !matched {
+            issues.push(LintIssue::TitleContentMismatch);
         }
     }
 
@@ -206,12 +218,16 @@ pub fn lint_card_with_source(
     check_typed_card_requirements(card, &mut issues);
 
     // 规则8: 引用证据校验
-    check_evidence_traceability(card, source_text, &mut issues);
+    // [v0.1.6] 已禁用：12 个 prompt 均未要求 evidence 字段，
+    // 不应作为强制检查项。evidence 为可选增强字段，有则加分，无则不影响通过。
+    // check_evidence_traceability(card, source_text, &mut issues);
 
     // 计算质量评分（0.0-1.0）
     let quality_score = compute_card_quality_score(card, &issues);
 
-    // 判定是否有效：致命问题（空标题、空内容）直接过滤；其他问题允许通过但降低评分
+    // 判定是否有效：致命问题直接过滤；其他问题允许通过但降低评分
+    // [v0.1.6] 移除了 MissingEvidence 和 EvidenceNotFound：
+    // prompt 未统一要求 evidence 字段，不应因此过滤卡片。
     let is_valid = !issues.iter().any(|i| {
         matches!(
             i,
@@ -220,8 +236,6 @@ pub fn lint_card_with_source(
                 | LintIssue::QuoteMissingSource
                 | LintIssue::GraphMissingStructure
                 | LintIssue::IndexTooFewEntries { .. }
-                | LintIssue::MissingEvidence
-                | LintIssue::EvidenceNotFound
         )
     });
 
@@ -528,7 +542,8 @@ fn check_typed_card_requirements(card: &Card, issues: &mut Vec<LintIssue>) {
     }
 }
 
-/// 检查证据可追溯性
+/// 检查证据可追溯性（v0.1.6 起暂停使用）
+#[allow(dead_code)]
 fn check_evidence_traceability(card: &Card, source_text: &str, issues: &mut Vec<LintIssue>) {
     if card.status == CardStatus::Rejected {
         return;
