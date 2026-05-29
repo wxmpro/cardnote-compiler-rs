@@ -46,7 +46,7 @@ pub const DOC_LIMITS: DocLimits = DocLimits {
 };
 
 /// 输出文件时间戳格式
-pub const TIMESTAMP_FORMAT: &str = "%Y%m%d_%H%M%S";
+pub const TIMESTAMP_FORMAT: &str = "%Y%m%d%H%M%S";
 
 // ═══════════════════════════════════════════════════════
 //  PDF 配置

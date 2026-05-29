@@ -2,6 +2,22 @@
 
 All notable changes to cardnote-compiler-rs are documented here.
 
+## [0.1.5] - 2026-05-29
+
+### Added
+- **./documents/ 文件夹**：存放用户上传/要求处理的原始文档
+  - 命名规则：`{日期}{文档名}`（无下划线），如 `20260529143000人生模式.pdf`
+  - 编译完成后自动复制原始文档到此文件夹
+
+### Changed
+- **输出目录命名修复**：`20260529_105112_人生模式` → `20260529105112_人生模式`
+  - `TIMESTAMP_FORMAT` 从 `%Y%m%d_%H%M%S` 改为 `%Y%m%d%H%M%S`
+
+### Removed
+- **删除按章节拆分编译**：`compile_by_chapters()` 已移除
+  - 恢复为一个文档一个文件夹的简洁结构
+  - 输出目录内只含 `all_cards.md`（全书卡片汇总）
+
 ## [0.1.4] - 2026-05-29
 
 ### Added
