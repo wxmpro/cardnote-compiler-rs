@@ -401,6 +401,17 @@ async fn run() -> anyhow::Result<()> {
                 .to_string()
         };
 
+        // [v0.1.10] 保存原始文档到 ./documents/（所有编译模式统一执行）
+        let doc_dir = Path::new("./documents");
+        tokio::fs::create_dir_all(&doc_dir).await.ok();
+        if let Some(file_name) = Path::new(&file).file_name() {
+            let timestamp = Local::now().format("%Y%m%d%H%M%S").to_string();
+            // [v0.1.10] 日期和文档名之间加 '_' 分隔符
+            let doc_name = format!("{}_{}", timestamp, file_name.to_string_lossy());
+            let dest = doc_dir.join(&doc_name);
+            tokio::fs::copy(&file, &dest).await.ok();
+        }
+
         if !result.chunks.is_empty() && result.chunks.len() > 1 {
             let output_path = cardnote_compiler::output::save_book(
                 &result.summary,
@@ -415,16 +426,6 @@ async fn run() -> anyhow::Result<()> {
         } else {
             let output_path = cardnote_compiler::output::save_single(&result, &cli.output).await?;
             println!("\n结果已保存到: {}", output_path);
-
-            // 保存原始文档到 ./documents/
-            let doc_dir = Path::new("./documents");
-            tokio::fs::create_dir_all(&doc_dir).await.ok();
-            if let Some(file_name) = Path::new(&file).file_name() {
-                let timestamp = Local::now().format("%Y%m%d%H%M%S").to_string();
-                let doc_name = format!("{}{}", timestamp, file_name.to_string_lossy());
-                let dest = doc_dir.join(&doc_name);
-                tokio::fs::copy(&file, &dest).await.ok();
-            }
         }
     }
 

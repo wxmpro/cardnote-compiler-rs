@@ -2,6 +2,19 @@
 
 All notable changes to cardnote-compiler-rs are documented here.
 
+## [0.1.11] - 2026-05-29
+
+### Fixed
+
+- **修复 documents/ 原始文档未复制**（`main.rs`）
+  - **根因**：保存原始文档到 `./documents/` 的逻辑只写在 `save_single`（单文件）分支中，但分块编译的文档走的是 `save_book`（多 chunk）分支，导致 documents/ 始终为空。
+  - **修复**：将文档复制逻辑提取到 `if/else` 分支**之前**，所有编译模式统一执行。
+  - **同步修复**：文件名格式从 `{日期}{文档名}` 改为 `{日期}_{文档名}`（加下划线分隔符），解决 `20260529143000人生模式.pdf` 无法区分日期和文档名的问题。
+  - **documents/README.md**：同步更新命名规则说明。
+
+### Changed
+- **Cargo.toml**：版本号 `0.1.10` → `0.1.11`
+
 ## [0.1.10] - 2026-05-29
 
 ### Fixed
