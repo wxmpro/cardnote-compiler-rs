@@ -514,12 +514,18 @@ fn check_reference_consistency(card: &Card, issues: &mut Vec<LintIssue>) {
 /// - 书籍：《书名》| 章节名 | 第{x}页
 /// - PDF/报告：《文档名》| 第{x}页
 fn check_ref_format(card: &Card, issues: &mut Vec<LintIssue>) {
-    let ref_text = card.reference.trim();
+    let mut ref_text = card.reference.trim().to_string();
 
     // ref 不能为空
     if ref_text.is_empty() {
         issues.push(LintIssue::InvalidRefFormat);
         return;
+    }
+
+    // [v0.1.7] 自动将全角分隔符 ｜ 转换为半角 |
+    // DeepSeek 等模型常输出全角分隔符，导致格式误判
+    if ref_text.contains('｜') {
+        ref_text = ref_text.replace('｜', "|");
     }
 
     // 必须包含书名号《...》
@@ -536,17 +542,6 @@ fn check_ref_format(card: &Card, issues: &mut Vec<LintIssue>) {
         return;
     }
 
-    // 禁止无意义内容
-    // 注意："文档"不在这里 banned，因为文档名可以包含"文档"（如"测试文档"）。
-    // "文档第236页"这种格式已经被"无书名号"检查过滤掉了。
-    let banned = ["作者简介", "来源", "出处"];
-    for b in &banned {
-        if ref_text.contains(b) {
-            issues.push(LintIssue::InvalidRefFormat);
-            return;
-        }
-    }
-
     // 检查分隔符 | 的数量
     // - 书籍格式：两个 |（三个部分：《书名》| 章节 | 第x页）
     // - PDF格式：一个 |（两个部分：《文档名》| 第x页）
@@ -554,6 +549,21 @@ fn check_ref_format(card: &Card, issues: &mut Vec<LintIssue>) {
     if pipe_count != 1 && pipe_count != 2 {
         issues.push(LintIssue::InvalidRefFormat);
         return;
+    }
+
+    // [v0.1.7] 禁止词检查：只在 ref 格式不完整时严格过滤。
+    // 如果已有书名号+页码+正确分隔符，说明是"正经引用"格式。
+    // 此时"来源""作者简介"出现在章节名位置（如"第六章 幸福的来源"）是合法的，
+    // 不应误杀。真正需要过滤的是那些只有禁止词、没有完整格式的情况
+    // （但那种情况已被上面的书名号/页码检查过滤了）。
+    //
+    // 例外：仍然过滤纯 "出处" 模式（如 LLM 输出 "出处：网络" 这种非标准格式）
+    let banned = ["出处"];
+    for b in &banned {
+        if ref_text.contains(b) {
+            issues.push(LintIssue::InvalidRefFormat);
+            return;
+        }
     }
 
     // 提取书名号中的内容，检查是否为空
