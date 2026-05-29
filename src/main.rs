@@ -403,13 +403,32 @@ async fn run() -> anyhow::Result<()> {
             )
             .await?;
             println!("\n结果已保存到: {}", output_path);
+            // 保存原始文件副本和 Markdown 文本
+            save_source_docs(&file, &document, &output_path).await;
         } else {
             let output_path = cardnote_compiler::output::save_single(&result, &cli.output).await?;
             println!("\n结果已保存到: {}", output_path);
+            // 保存原始文件副本和 Markdown 文本
+            save_source_docs(&file, &document, &output_path).await;
         }
     }
 
     Ok(())
+}
+
+/// 保存原始文档副本和 Markdown 文本到输出目录
+async fn save_source_docs(file_path: &str, document: &str, output_path: &str) {
+    let output_dir = Path::new(output_path);
+
+    // 保存原始文件副本
+    if let Some(file_name) = Path::new(file_path).file_name() {
+        let dest = output_dir.join(format!("source_{}", file_name.to_string_lossy()));
+        tokio::fs::copy(file_path, &dest).await.ok();
+    }
+
+    // 保存转换后的 Markdown 文本
+    let md_path = output_dir.join("_source_text.md");
+    tokio::fs::write(&md_path, document).await.ok();
 }
 
 /// 按章节拆分编译 PDF
@@ -552,6 +571,12 @@ async fn compile_by_chapters(
     let all_cards_path = base_dir.join("all_cards.md");
     let content: Vec<String> = all_cards.iter().map(|c| c.to_markdown()).collect();
     tokio::fs::write(&all_cards_path, content.join("\n")).await?;
+
+    // 保存原始文件副本到顶层目录
+    if let Some(file_name) = Path::new(file_path).file_name() {
+        let dest = base_dir.join(format!("source_{}", file_name.to_string_lossy()));
+        tokio::fs::copy(file_path, &dest).await.ok();
+    }
 
     println!(
         "\n  总计: {} 章成功 | {} 张卡片",

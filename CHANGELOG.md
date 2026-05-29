@@ -2,6 +2,17 @@
 
 All notable changes to cardnote-compiler-rs are documented here.
 
+## [0.1.4] - 2026-05-29
+
+### Added
+- **保存原始文档副本**：每次编译后自动保存原始文件到输出目录
+  - `save_source_docs()`：保存原始文件副本（`source_文件名`）和 Markdown 文本（`_source_text.md`）
+  - 支持所有编译路径（全书编译、按章节编译、策展模式）
+  - 解决用户忘记生成了哪些文档的问题
+
+### Changed
+- **公开内部函数**：`save_source_copy()` 新增于 `output.rs`
+
 ## [0.1.3] - 2026-05-29
 
 ### Added

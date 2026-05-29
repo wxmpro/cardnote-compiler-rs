@@ -129,6 +129,19 @@ pub async fn save_input_quality_report(
     Ok(dir.to_string_lossy().to_string())
 }
 
+/// 保存原始文档副本到输出目录
+pub async fn save_source_copy(source_file: &str, output_dir: &Path) -> Result<()> {
+    let source_path = Path::new(source_file);
+    if !source_path.exists() {
+        return Ok(());
+    }
+    if let Some(file_name) = source_path.file_name() {
+        let dest = output_dir.join(format!("source_{}", file_name.to_string_lossy()));
+        fs::copy(source_path, dest).await?;
+    }
+    Ok(())
+}
+
 /// 保存单篇编译结果
 pub async fn save_single(result: &CompilationResult, output_dir: &str) -> Result<String> {
     // 优先使用源文件名（PDF 名称/书名）作为目录名
