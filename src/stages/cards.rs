@@ -311,7 +311,9 @@ fn parse_all_cards(response: &str) -> Result<Vec<Card>> {
                 .or_else(|| extract_content(block))
                 .unwrap_or_default(),
             card_type,
-            reference: extract_field(block, "参考").unwrap_or_default(),
+            reference: extract_field(block, "ref")
+                .or_else(|| extract_field(block, "参考"))
+                .unwrap_or_default(),
             unique_id: String::new(),
             original_text: extract_field(block, "原文").unwrap_or_default(),
             source: extract_field(block, "出处").unwrap_or_default(),

@@ -31,6 +31,12 @@ All notable changes to cardnote-compiler-rs are documented here.
   - 修复：剔除关键词检查，仅保留字数门槛（≥120字）。
   - 影响：消除综述卡的关键词误报。
 
+- **修复 ref 字段提取与格式规范**（`cards.rs` + 12 个 prompt）
+  - 根因1（字段名不匹配）：prompt 要求 LLM 输出 `ref：[来源]`，但代码提取的是 `extract_field(block, "参考")`，当 LLM 按 prompt 输出 `ref：` 时完全提取不到。
+  - 根因2（格式不明确）：prompt 只说 `ref：[来源]`，没有指定具体格式，导致 LLM 输出五花八门的 ref：`作者简介`（无页码）、`《态度改变与社会影响》`（原始出处而非当前文档）、`文档第236页`（"文档"不是书名）。
+  - 修复：代码改为 `extract_field(block, "ref").or_else(|| extract_field(block, "参考"))`，同时支持两种字段名；12 个 prompt 统一将 `ref：` 改为 `参考：`；全局 prompt 新增"参考字段格式规范"，明确要求格式为 `阳志平《人生模式》| {章节名} | 第{x}页`，必须引用当前文档而非原始出处。
+  - 影响：ref 格式统一，可追溯性增强。
+
 ### Changed
 - **Cargo.toml**：版本号 `0.1.5` → `0.1.6`
 
