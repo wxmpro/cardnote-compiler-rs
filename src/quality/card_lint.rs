@@ -18,7 +18,7 @@ impl Default for CardLintConfig {
         Self {
             min_content_length: 30,
             max_garbage_ratio: 0.3,
-            min_info_density: 0.1,
+            min_info_density: 0.05,  // v0.1.6: 从 0.1 放宽到 0.05，配合加权算法减少误报
             check_reference: true,
         }
     }
@@ -354,68 +354,104 @@ fn compute_garbage_ratio(text: &str) -> f64 {
     garbage_chars as f64 / total_chars.max(1) as f64
 }
 
-/// 计算信息密度
+/// 计算信息密度（v0.1.6 改进版）
+///
+/// 改进点：
+/// 1. 标记词从 47 个扩展到 90+ 个，覆盖更多表达方式
+/// 2. 新增词性维度：动作性标记、深度分析标记、引用标记、量化标记
+/// 3. 权重差异化：学术术语 2 分，逻辑连接词 1 分，引用标记 1.5 分
+///
+/// 原算法的问题：标记词太少（仅 47 个），只覆盖学术写作风格，
+/// 导致大量高质量卡片（如人物卡、金句卡）被误判为"信息密度低"。
 fn compute_info_density(content: &str) -> f64 {
     if content.is_empty() {
         return 0.0;
     }
 
     let char_count = content.chars().count().max(1);
+    let mut score = 0.0;
 
-    // 信息标记：术语括号、举例、逻辑连接词、学术概念标记
-    let markers = content.matches('「').count()
-        + content.matches('【').count()
-        + content.matches("比如").count()
-        + content.matches("例如").count()
-        + content.matches("关键").count()
-        + content.matches("核心").count()
-        + content.matches("首先").count()
-        + content.matches("其次").count()
-        + content.matches("因此").count()
-        + content.matches("然而").count()
-        // 学术/论述标记
-        + content.matches("研究发现").count()
-        + content.matches("研究表明").count()
-        + content.matches("实验").count()
-        + content.matches("理论").count()
-        + content.matches("模型").count()
-        + content.matches("概念").count()
-        + content.matches("定义").count()
-        + content.matches("提出").count()
-        + content.matches("指出").count()
-        + content.matches("认为").count()
-        // 结构化标记
-        + content.matches("分为").count()
-        + content.matches("包括").count()
-        + content.matches("通过").count()
-        + content.matches("基于").count()
-        + content.matches("导致").count()
-        + content.matches("影响").count()
-        + content.matches("区别").count()
-        + content.matches("比较").count()
-        + content.matches("相反").count()
-        + content.matches("不仅").count()
-        + content.matches("而且").count()
-        + content.matches("虽然").count()
-        + content.matches("但是").count()
-        + content.matches("如果").count()
-        + content.matches("那么").count()
-        + content.matches("不同于").count()
-        + content.matches("相较于").count()
-        // 数据/证据标记
-        + content.matches("数据").count()
-        + content.matches("证据").count()
-        + content.matches("统计").count()
-        + content.matches("调查").count()
-        + content.matches("百分比").count()
-        + content.matches("%").count()
-        + content.matches("比例").count()
-        // 英文学术标记（术语卡常见）
-        + content.matches("vs").count()
-        + content.matches("e.g.").count()
-        + content.matches("i.e.").count();
+    // 权重 2.0：学术/专业术语（信息密度最高的标记）
+    let academic_terms = [
+        "研究发现", "研究表明", "实验证明", "实验表明",
+        "理论", "模型", "框架", "机制", "原理", "规律",
+        "概念", "定义", "术语", "范式", "假设", "推论",
+        "认知", "心理", "神经", "行为", "情绪", "动机",
+        "结构", "系统", "模式", "流程", "算法", "函数",
+    ];
+    for term in &academic_terms {
+        score += content.matches(term).count() as f64 * 2.0;
+    }
 
-    (markers as f64 * 100.0) / char_count as f64
+    // 权重 1.5：引用/来源标记（表明有外部知识支撑）
+    let citation_terms = [
+        "提出", "指出", "认为", "主张", "强调", "总结",
+        "引用", "借鉴", "参考", "依据", "根据", "基于",
+    ];
+    for term in &citation_terms {
+        score += content.matches(term).count() as f64 * 1.5;
+    }
+    // 标点引用标记单独处理
+    let citation_puncts = ["「", "【", "《", "\"", "'", "(", "（"];
+    for p in &citation_puncts {
+        score += content.matches(p).count() as f64 * 1.5;
+    }
+
+    // 权重 1.5：量化/数据标记（具体信息）
+    let quantifiers = [
+        "数据", "证据", "统计", "调查", "百分比", "比例",
+        "数量", "数值", "指标", "维度", "程度", "水平",
+        "大约", "约", "超过", "低于", "达到", "增至",
+    ];
+    for q in &quantifiers {
+        score += content.matches(q).count() as f64 * 1.5;
+    }
+    // 数字字符单独计分
+    let digit_count = content.chars().filter(|c| c.is_ascii_digit()).count();
+    score += digit_count as f64 * 0.5;
+
+    // 权重 1.0：逻辑连接词（论证结构）
+    let logic_connectors = [
+        "比如", "例如", "如", "像", "譬如",
+        "首先", "其次", "再次", "最后", "第一", "第二", "第三",
+        "因此", "所以", "因而", "从而", "于是",
+        "然而", "但是", "不过", "却", "而", "反而",
+        "虽然", "尽管", "即使", "纵然",
+        "如果", "假设", "若", "只要", "只有", "那么", "则",
+        "不仅", "不但", "而且", "并且", "同时", "此外", "另外",
+        "因为", "由于", "鉴于", "考虑到",
+        "不同于", "相较于", "相比", "相对", "相反", "反之",
+        "分为", "包括", "涵盖", "包含", "涉及", "关于",
+        "通过", "凭借", "利用", "采用", "运用", "使用",
+        "导致", "造成", "引起", "引发", "产生", "带来",
+        "影响", "作用", "效果", "结果", "后果", "成果",
+        "区别", "差异", "区分", "辨别", "识别",
+        "比较", "对比", "对照", "类比",
+        "关键", "核心", "本质", "实质", "根本", "重点", "要点",
+        "原因", "理由", "根源", "由来", "起因",
+        "目的", "目标", "意图", "旨在", "为了",
+        "意义", "价值", "重要性", "作用",
+        "方法", "方式", "途径", "手段", "策略", "技巧", "步骤",
+        "分析", "解析", "剖析", "解读", "阐释", "阐明", "论述", "论证",
+        "总结", "归纳", "概括", "综述", "回顾", "梳理",
+        "具体", "详细", "明确", "清晰", "确切", "明确",
+        "实例", "案例", "事例", "例子", "样板", "典型",
+    ];
+    for conn in &logic_connectors {
+        score += content.matches(conn).count() as f64 * 1.0;
+    }
+
+    // 权重 0.5：结构化标记（列表、分层）
+    let structure_markers = [
+        "：", ":", "1.", "2.", "3.", "4.", "5.",
+        "一、", "二、", "三、", "四、", "五、",
+        "（1）", "（2）", "（3）", "①", "②", "③",
+    ];
+    for m in &structure_markers {
+        score += content.matches(m).count() as f64 * 0.5;
+    }
+
+    (score * 100.0) / char_count as f64
 }
 
 /// 检查引用一致性
@@ -425,18 +461,23 @@ fn compute_info_density(content: &str) -> f64 {
 /// 2. 金句卡内容与原文高度相似（>80%）→ LikelyCopied（直接复制非改写）
 /// 3. 引用字段包含乱码字符 → ReferenceMismatch
 fn check_reference_consistency(card: &Card, issues: &mut Vec<LintIssue>) {
-    // 规则1：金句卡引用完整性
+    // 规则1：金句卡引用完整性（仅检查金句卡）
     if card.card_type == CardType::Quote {
         if !card.original_text.is_empty() && card.source.is_empty() {
             issues.push(LintIssue::ReferenceMismatch);
         }
+    }
 
-        // 规则2：内容是否直接复制原文
-        if !card.original_text.is_empty() && !card.content.is_empty() {
-            let similarity = compute_text_similarity(&card.content, &card.original_text);
-            if similarity > 0.8 {
-                issues.push(LintIssue::LikelyCopied { similarity });
-            }
+    // 规则2：内容是否直接复制原文（金句卡豁免）
+    // [v0.1.6] 金句卡本来就应该包含原文（original_text），content 以"原文：..."
+    // 开头是正常格式，不应判定为"直接复制"。仅对非金句卡执行此检查。
+    if card.card_type != CardType::Quote
+        && !card.original_text.is_empty()
+        && !card.content.is_empty()
+    {
+        let similarity = compute_text_similarity(&card.content, &card.original_text);
+        if similarity > 0.8 {
+            issues.push(LintIssue::LikelyCopied { similarity });
         }
     }
 
@@ -528,13 +569,11 @@ fn check_typed_card_requirements(card: &Card, issues: &mut Vec<LintIssue>) {
             }
         }
         CardType::Review => {
-            let has_synthesis = card.content.contains("综合")
-                || card.content.contains("关联")
-                || card.content.contains("跨")
-                || card.content.contains("整体")
-                || card.content.contains("一方面")
-                || card.content.contains("另一方面");
-            if card.content.chars().count() < 120 || !has_synthesis {
+            // [v0.1.6] 已剔除关键词检查：原逻辑要求内容必须包含"综合/关联/跨/整体"
+            // 等特定词汇才能判定为"有跨主题连接"，但 LLM 可能用其他表达方式实现
+            // 同样的语义连接。字符串包含检查无法判断语义层面的跨主题整合。
+            // 保留字数门槛（≥120字）确保综述卡有足够的展开空间。
+            if card.content.chars().count() < 120 {
                 issues.push(LintIssue::ReviewMissingSynthesis);
             }
         }
@@ -597,7 +636,7 @@ fn compute_card_quality_score(_card: &Card, issues: &[LintIssue]) -> f64 {
             LintIssue::EmptyOrShortContent { .. } => 0.5, // 严重
             LintIssue::HighGarbageRatio { .. } => 0.4,    // 严重
             LintIssue::TitleContentMismatch => 0.3,       // 中等
-            LintIssue::LowInfoDensity { .. } => 0.2,      // 轻微
+            LintIssue::LowInfoDensity { .. } => 0.1,      // 轻微（v0.1.6: 从 0.2 降到 0.1）
             LintIssue::LikelyCopied { .. } => 0.25,       // 中等
             LintIssue::ReferenceMismatch => 0.15,         // 轻微
             LintIssue::MissingEvidence => 0.6,
@@ -750,11 +789,12 @@ mod tests {
 
     #[test]
     fn test_quote_direct_copy() {
+        // [v0.1.6] 金句卡豁免 LikelyCopied 检查：金句卡本来就应该包含原文，
+        // content 以"原文：..."开头是正常格式。改为测试新知卡直接复制原文。
         let mut card = test_card();
-        card.card_type = CardType::Quote;
+        card.card_type = CardType::Knowledge;
         card.original_text = "内容F内容F内容F。".to_string();
-        card.source = "出处A".to_string();
-        card.content = "内容F内容F内容F。".to_string(); // 直接复制
+        card.content = "内容F内容F内容F。".to_string(); // 直接复制原文
         let config = CardLintConfig::default();
         let result = lint_card(&card, &config);
         assert!(
