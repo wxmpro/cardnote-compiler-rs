@@ -2,6 +2,29 @@
 
 All notable changes to cardnote-compiler-rs are documented here.
 
+## [0.1.7] - 2026-05-29
+
+### Added
+
+- **ref 格式强制检查**（`card_lint.rs`）
+  - 新增 `InvalidRefFormat` 致命问题，不符合规范的卡片直接过滤。
+  - 检查规则：
+    1. ref 不能为空
+    2. 必须包含书名号 `《...》`
+    3. 必须包含页码标记 `第...页`
+    4. 禁止无意义内容：`作者简介`、`来源`、`出处`
+    5. 分隔符 `|` 数量必须为 1 个（PDF）或 2 个（书籍）
+    6. 书名号内必须有具体名称
+  - 新增 7 个单元测试覆盖有效/无效格式。
+
+### Fixed
+
+- **prompt ref 格式区分书籍与 PDF**（`all_cards.md`）
+  - 明确判断标准：文档中有章节标题→书籍格式，只有页码→PDF格式。
+
+### Changed
+- **Cargo.toml**：版本号 `0.1.6` → `0.1.7`
+
 ## [0.1.6] - 2026-05-29
 
 ### Fixed

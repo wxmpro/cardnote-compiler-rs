@@ -57,6 +57,8 @@ pub enum LintIssue {
     IndexTooFewEntries { actual: usize, required: usize },
     /// 综述卡缺少跨主题连接
     ReviewMissingSynthesis,
+    /// ref 格式不符合规范
+    InvalidRefFormat,
 }
 
 impl std::fmt::Display for LintIssue {
@@ -92,6 +94,7 @@ impl std::fmt::Display for LintIssue {
                 write!(f, "索引卡条目过少: {} < {}", actual, required)
             }
             LintIssue::ReviewMissingSynthesis => write!(f, "综述卡缺少跨主题连接"),
+            LintIssue::InvalidRefFormat => write!(f, "ref格式不符合规范"),
         }
     }
 }
@@ -214,6 +217,12 @@ pub fn lint_card_with_source(
     // 规则6: 引用一致性检查（金句卡专用 + 通用引用格式）
     check_reference_consistency(card, &mut issues);
 
+    // 规则6.5: ref 格式检查
+    // [v0.1.6] 强制要求 ref 符合格式规范：
+    // - 书籍：《书名》| 章节 | 第x页
+    // - PDF/报告：《文档名》| 第x页
+    check_ref_format(card, &mut issues);
+
     // 规则7: 类型化结构检查
     check_typed_card_requirements(card, &mut issues);
 
@@ -236,6 +245,7 @@ pub fn lint_card_with_source(
                 | LintIssue::QuoteMissingSource
                 | LintIssue::GraphMissingStructure
                 | LintIssue::IndexTooFewEntries { .. }
+                | LintIssue::InvalidRefFormat
         )
     });
 
@@ -498,6 +508,68 @@ fn check_reference_consistency(card: &Card, issues: &mut Vec<LintIssue>) {
     }
 }
 
+/// 检查 ref 格式是否符合规范
+///
+/// 规范：
+/// - 书籍：《书名》| 章节名 | 第{x}页
+/// - PDF/报告：《文档名》| 第{x}页
+fn check_ref_format(card: &Card, issues: &mut Vec<LintIssue>) {
+    let ref_text = card.reference.trim();
+
+    // ref 不能为空
+    if ref_text.is_empty() {
+        issues.push(LintIssue::InvalidRefFormat);
+        return;
+    }
+
+    // 必须包含书名号《...》
+    let has_book_mark = ref_text.contains('《') && ref_text.contains('》');
+    if !has_book_mark {
+        issues.push(LintIssue::InvalidRefFormat);
+        return;
+    }
+
+    // 必须包含页码标记"第...页"
+    let has_page = ref_text.contains('第') && ref_text.contains('页');
+    if !has_page {
+        issues.push(LintIssue::InvalidRefFormat);
+        return;
+    }
+
+    // 禁止无意义内容
+    // 注意："文档"不在这里 banned，因为文档名可以包含"文档"（如"测试文档"）。
+    // "文档第236页"这种格式已经被"无书名号"检查过滤掉了。
+    let banned = ["作者简介", "来源", "出处"];
+    for b in &banned {
+        if ref_text.contains(b) {
+            issues.push(LintIssue::InvalidRefFormat);
+            return;
+        }
+    }
+
+    // 检查分隔符 | 的数量
+    // - 书籍格式：两个 |（三个部分：《书名》| 章节 | 第x页）
+    // - PDF格式：一个 |（两个部分：《文档名》| 第x页）
+    let pipe_count = ref_text.matches('|').count();
+    if pipe_count != 1 && pipe_count != 2 {
+        issues.push(LintIssue::InvalidRefFormat);
+        return;
+    }
+
+    // 提取书名号中的内容，检查是否为空
+    if let Some(start) = ref_text.find('《') {
+        if let Some(end) = ref_text.find('》') {
+            if start < end {
+                let book_name = &ref_text[start + '《'.len_utf8()..end];
+                if book_name.trim().is_empty() {
+                    issues.push(LintIssue::InvalidRefFormat);
+                    return;
+                }
+            }
+        }
+    }
+}
+
 /// 检查类型化卡片结构要求
 fn check_typed_card_requirements(card: &Card, issues: &mut Vec<LintIssue>) {
     match card.card_type {
@@ -647,6 +719,7 @@ fn compute_card_quality_score(_card: &Card, issues: &[LintIssue]) -> f64 {
             LintIssue::ActionMissingSteps => 0.3,
             LintIssue::TermMissingDefinition => 0.3,
             LintIssue::ReviewMissingSynthesis => 0.3,
+            LintIssue::InvalidRefFormat => 0.6, // 致命
         };
         score -= deduction;
     }
@@ -664,7 +737,7 @@ mod tests {
             title: "标题A".to_string(),
             content: "内容A内容A内容A内容A内容A内容A内容A内容A内容A内容A。标题A。".to_string(),
             card_type: CardType::Knowledge,
-            reference: "p.23".to_string(),
+            reference: "《测试文档》| 第23页".to_string(),
             unique_id: "20240101120000".to_string(),
             original_text: "".to_string(),
             source: "".to_string(),
@@ -934,5 +1007,92 @@ mod tests {
     fn test_garbage_ratio_all_clean() {
         let text = "内容H内容H内容H内容H内容H。";
         assert_eq!(compute_garbage_ratio(text), 0.0);
+    }
+
+    #[test]
+    fn test_ref_format_book_valid() {
+        let mut card = test_card();
+        card.reference = "《人生模式》| 导论 优化你的人生模式 | 第7页".to_string();
+        let config = CardLintConfig::default();
+        let result = lint_card(&card, &config);
+        assert!(
+            !result.issues.contains(&LintIssue::InvalidRefFormat),
+            "书籍格式应为有效: {}",
+            card.reference
+        );
+    }
+
+    #[test]
+    fn test_ref_format_pdf_valid() {
+        let mut card = test_card();
+        card.reference = "《Result_20》| 第15页".to_string();
+        let config = CardLintConfig::default();
+        let result = lint_card(&card, &config);
+        assert!(
+            !result.issues.contains(&LintIssue::InvalidRefFormat),
+            "PDF格式应为有效: {}",
+            card.reference
+        );
+    }
+
+    #[test]
+    fn test_ref_format_empty() {
+        let mut card = test_card();
+        card.reference = "".to_string();
+        let config = CardLintConfig::default();
+        let result = lint_card(&card, &config);
+        assert!(
+            result.issues.contains(&LintIssue::InvalidRefFormat),
+            "空ref应为无效"
+        );
+        assert!(!result.is_valid, "空ref应为致命问题");
+    }
+
+    #[test]
+    fn test_ref_format_no_book_mark() {
+        let mut card = test_card();
+        card.reference = "文档第236页".to_string();
+        let config = CardLintConfig::default();
+        let result = lint_card(&card, &config);
+        assert!(
+            result.issues.contains(&LintIssue::InvalidRefFormat),
+            "无书名号应为无效"
+        );
+    }
+
+    #[test]
+    fn test_ref_format_no_page() {
+        let mut card = test_card();
+        card.reference = "《人生模式》| 导论".to_string();
+        let config = CardLintConfig::default();
+        let result = lint_card(&card, &config);
+        assert!(
+            result.issues.contains(&LintIssue::InvalidRefFormat),
+            "无页码应为无效"
+        );
+    }
+
+    #[test]
+    fn test_ref_format_author_bio() {
+        let mut card = test_card();
+        card.reference = "作者简介".to_string();
+        let config = CardLintConfig::default();
+        let result = lint_card(&card, &config);
+        assert!(
+            result.issues.contains(&LintIssue::InvalidRefFormat),
+            "作者简介应为无效"
+        );
+    }
+
+    #[test]
+    fn test_ref_format_wrong_pipe_count() {
+        let mut card = test_card();
+        card.reference = "《人生模式》| 导论 | 第7页 | 额外内容".to_string();
+        let config = CardLintConfig::default();
+        let result = lint_card(&card, &config);
+        assert!(
+            result.issues.contains(&LintIssue::InvalidRefFormat),
+            "分隔符数量错误应为无效"
+        );
     }
 }
