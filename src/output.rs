@@ -604,6 +604,14 @@ fn chunks_to_markdown(chunks: &[crate::models::ChunkInfo]) -> String {
 /// 清理文件名中的非法字符
 pub fn sanitize_filename(name: &str) -> String {
     name.replace(['/', '\\', ':', '*', '?', '"', '<', '>', '|'], "_")
+        .replace('：', "_")
+        .replace('？', "_")
+        .replace('"', "_")
+        .replace('＜', "_")
+        .replace('＞', "_")
+        .replace('｜', "_")
+        .replace('/', "_")
+        .replace('\\', "_")
         .trim()
         .to_string()
 }
