@@ -2,6 +2,28 @@
 
 All notable changes to cardnote-compiler-rs are documented here.
 
+## [0.1.8] - 2026-05-29
+
+### Added
+
+- **PDF 书籍元数据提取**（`converter.rs`）
+  - 新增 `BookMetadata` 结构体（title, author, publisher, isbn, page_count）
+  - 新增 `extract_pdf_metadata()` 函数，三层提取策略：
+    1. PDF Info 字典（Title, Author, Subject）—— 最准确
+    2. 文本正则匹配（版权页的"书名：XXX"）—— fallback
+    3. 文件名 —— 最后手段
+  - 新增 `extract_title_from_text()` 正则提取函数
+
+### Fixed
+
+- **修复输出目录命名 bug**（`main.rs`）
+  - 根因：Map-Reduce 分块编译模式下调用 `save_book()` 时传入的是 `result.summary.title`（LLM 生成的第一章标题"导论 优化你的人生模式"），而不是文件名/书名。
+  - 修复：编译前先调用 `extract_pdf_metadata()` 提取真正的书名，传入 `save_book()`。提取失败时 fallback 到文件名。
+  - 影响：输出目录从 `20260529142827_导论 优化你的人生模式` 恢复为 `20260529142827_人生模式`
+
+### Changed
+- **Cargo.toml**：版本号 `0.1.7` → `0.1.8`
+
 ## [0.1.7] - 2026-05-29
 
 ### Added

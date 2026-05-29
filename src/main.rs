@@ -7,7 +7,8 @@ use colored::*;
 use cardnote_compiler::api::create_client;
 use cardnote_compiler::config::{find_env_file, get_api_config, get_provider_label};
 use cardnote_compiler::converter::{
-    convert_to_markdown_async, convert_to_markdown_async_with_timeout, guess_title,
+    convert_to_markdown_async, convert_to_markdown_async_with_timeout,
+    extract_pdf_metadata, guess_title,
 };
 use cardnote_compiler::diagnostics;
 use cardnote_compiler::models::Document;
@@ -380,6 +381,26 @@ async fn run() -> anyhow::Result<()> {
 
         let result = pipeline.run(&document, &file).await?;
 
+        // 提取书籍元数据（书名优先于 LLM 生成的摘要标题）
+        let book_title = if is_pdf {
+            let meta = extract_pdf_metadata(&file);
+            if !meta.title.is_empty() {
+                meta.title
+            } else {
+                Path::new(&file)
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or(&result.summary.title)
+                    .to_string()
+            }
+        } else {
+            Path::new(&file)
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or(&result.summary.title)
+                .to_string()
+        };
+
         if !result.chunks.is_empty() && result.chunks.len() > 1 {
             let output_path = cardnote_compiler::output::save_book(
                 &result.summary,
@@ -387,7 +408,7 @@ async fn run() -> anyhow::Result<()> {
                 &result.graph.entities,
                 &result.graph.relations,
                 &cli.output,
-                &result.summary.title,
+                &book_title,
             )
             .await?;
             println!("\n结果已保存到: {}", output_path);

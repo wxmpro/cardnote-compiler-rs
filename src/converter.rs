@@ -1038,6 +1038,126 @@ pub async fn convert_to_markdown_async_with_timeout(
     .map_err(|e| AppError::TaskPanic(format!("转换任务 panic: {}", e)))?
 }
 
+/// 书籍元数据
+#[derive(Debug, Clone, Default)]
+pub struct BookMetadata {
+    pub title: String,
+    pub author: String,
+    pub publisher: String,
+    pub isbn: String,
+    pub page_count: usize,
+}
+
+/// 从 PDF 提取书籍元数据
+///
+/// 提取策略（按优先级）：
+/// 1. PDF Info 字典（Title, Author 等）—— 最准确
+/// 2. 文本正则匹配（版权页）—— fallback
+/// 3. 文件名 —— 最后手段
+pub fn extract_pdf_metadata(file_path: &str) -> BookMetadata {
+    let mut meta = BookMetadata::default();
+
+    // 策略1：从 PDF Info 字典提取
+    if let Ok(doc) = lopdf::Document::load(file_path) {
+        meta.page_count = doc.get_pages().len();
+
+        // 从 trailer 的 Info 字典提取元数据
+        if let Ok(info_ref) = doc.trailer.get(b"Info") {
+            if let lopdf::Object::Reference(id) = info_ref {
+                if let Ok(info_obj) = doc.get_object(*id) {
+                    if let Ok(info_dict) = info_obj.as_dict() {
+                        // Title
+                        if let Ok(obj) = info_dict.get(b"Title") {
+                            meta.title = pdf_string_value(obj);
+                        }
+                        // Author
+                        if let Ok(obj) = info_dict.get(b"Author") {
+                            meta.author = pdf_string_value(obj);
+                        }
+                        // Subject / Publisher
+                        if let Ok(obj) = info_dict.get(b"Subject") {
+                            meta.publisher = pdf_string_value(obj);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // 策略2：如果 Info 字典没有 Title，从文本前3页正则提取
+    if meta.title.is_empty() {
+        if let Ok(text) = read_pdf_raw(file_path) {
+            meta.title = extract_title_from_text(&text);
+        }
+    }
+
+    // 策略3：如果还没有，用文件名
+    if meta.title.is_empty() {
+        meta.title = Path::new(file_path)
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("")
+            .to_string();
+    }
+
+    meta
+}
+
+/// 从 lopdf Object 中提取字符串值
+fn pdf_string_value(obj: &lopdf::Object) -> String {
+    match obj {
+        lopdf::Object::String(s, _) => String::from_utf8_lossy(s).to_string(),
+        lopdf::Object::Name(n) => String::from_utf8_lossy(n).to_string(),
+        _ => String::new(),
+    }
+}
+
+/// 从文本中用正则提取书名
+///
+/// 匹配模式：
+/// - "书名：人生模式——识别并优化你的核心认知"
+/// - "书 名：人生模式"
+fn extract_title_from_text(text: &str) -> String {
+    // 模式1: "书名：XXX" 或 "书 名：XXX"
+    let re1 = regex::Regex::new(r"书\s*名[：:]\s*(.+?)(?:\n|$)").unwrap();
+    if let Some(cap) = re1.captures(text) {
+        let title = cap[1].trim();
+        // 清理 CIP 数据中的杂乱内容，只取第一个书名
+        if let Some(idx) = title.find("作 者") {
+            return title[..idx].trim().to_string();
+        }
+        if let Some(idx) = title.find("作者") {
+            return title[..idx].trim().to_string();
+        }
+        return title.to_string();
+    }
+
+    // 模式2: 大标题格式（第一页的大字标题）
+    let lines: Vec<&str> = text.lines().take(50).collect();
+    for line in &lines {
+        let trimmed = line.trim();
+        if trimmed.len() > 5
+            && trimmed.len() < 80
+            && !trimmed.starts_with("ISBN")
+            && !trimmed.starts_with("http")
+            && !trimmed.starts_with("©")
+            && !trimmed.starts_with("版权")
+            && !trimmed.starts_with("CIP")
+            && !trimmed.contains("出版社")
+            && !trimmed.contains("印刷")
+            && !trimmed.contains("定价")
+        {
+            // 如果这行看起来像书名（包含中文，不含常见非书名词汇）
+            let has_chinese = trimmed.chars().any(|c| c as u32 >= 0x4E00 && c as u32 <= 0x9FFF);
+            if has_chinese {
+                return trimmed.to_string();
+            }
+        }
+    }
+
+    String::new()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
