@@ -131,11 +131,22 @@ pub async fn save_input_quality_report(
 
 /// 保存单篇编译结果
 pub async fn save_single(result: &CompilationResult, output_dir: &str) -> Result<String> {
-    let title = if result.summary.title.is_empty() || result.summary.title == "未命名" {
-        None
+    // 优先使用源文件名（PDF 名称/书名）作为目录名
+    let title = if !result.source_file.is_empty() {
+        Path::new(&result.source_file)
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .filter(|s| !s.is_empty())
     } else {
-        Some(result.summary.title.as_str())
+        None
     };
+    let title = title.or_else(|| {
+        if !result.summary.title.is_empty() && result.summary.title != "未命名" {
+            Some(result.summary.title.as_str())
+        } else {
+            None
+        }
+    });
     let dir = create_output_dir(output_dir, title).await?;
 
     // 保存摘要
@@ -306,7 +317,8 @@ pub async fn save_curation(
 }
 
 /// 保存单篇编译结果到指定目录（不创建新的带时间戳的目录）
-async fn save_single_to_dir(result: &CompilationResult, output_dir: &Path) -> Result<()> {
+/// 保存单篇编译结果到指定目录
+pub async fn save_single_to_dir(result: &CompilationResult, output_dir: &Path) -> Result<()> {
     fs::create_dir_all(output_dir).await?;
 
     // 保存摘要
@@ -392,7 +404,8 @@ pub async fn save_cards_by_type(dir: &Path, cards: &[Card]) -> Result<()> {
 }
 
 /// 创建输出目录，目录名冲突时自动追加递增序号
-async fn create_output_dir(base: &str, title: Option<&str>) -> Result<std::path::PathBuf> {
+/// 创建输出目录
+pub async fn create_output_dir(base: &str, title: Option<&str>) -> Result<std::path::PathBuf> {
     let dir = resolve_unique_output_dir(base, title);
     fs::create_dir_all(&dir).await?;
     Ok(dir)
@@ -588,7 +601,8 @@ fn chunks_to_markdown(chunks: &[crate::models::ChunkInfo]) -> String {
 }
 
 /// 清理文件名
-fn sanitize_filename(name: &str) -> String {
+/// 清理文件名中的非法字符
+pub fn sanitize_filename(name: &str) -> String {
     name.replace(['/', '\\', ':', '*', '?', '"', '<', '>', '|'], "_")
         .trim()
         .to_string()

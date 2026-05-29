@@ -2,6 +2,30 @@
 
 All notable changes to cardnote-compiler-rs are documented here.
 
+## [0.1.3] - 2026-05-29
+
+### Added
+- **按章节拆分编译 PDF**：PDF 有目录结构时，自动按章节拆分，每章独立编译
+  - 新增 `compile_by_chapters()` 函数（`main.rs`）
+  - 提取 PDF 目录（TOC），按一级标题拆分章节
+  - 每章保存到独立子目录：`{timestamp}_{书名}/{章节名}/`
+  - 所有章节卡片汇总到顶层 `all_cards.md`
+  - 支持容错：单章编译失败不影响其他章节
+
+- **精确的 ref 引用信息**：卡片引用自动补充书名、章节、页码
+  - 格式：`《书名》| 章节标题 | 第x-y页`
+  - 解决"看不出引用来源"的问题
+
+### Changed
+- **目录命名优先使用文件名**：`save_single()` 中目录名优先从 `source_file` 提取
+  - 优先：PDF 文件名（去掉扩展名）
+  - 回退：LLM 生成的 `summary.title`
+  - 解决 LLM 生成标题不准确导致的目录名问题
+
+- **公开必要的内部函数**：为 `compile_by_chapters` 提供支持
+  - `converter.rs`: `split_pdf_by_toc()`、`save_pdf_range()` → `pub`
+  - `output.rs`: `create_output_dir()`、`save_single_to_dir()`、`sanitize_filename()` → `pub`
+
 ## [0.1.2] - 2026-05-28
 
 ### Fixed

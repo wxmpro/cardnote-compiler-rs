@@ -309,6 +309,20 @@ async fn run() -> anyhow::Result<()> {
             .extension()
             .and_then(|ext| ext.to_str())
             .is_some_and(|ext| ext.eq_ignore_ascii_case("pdf"));
+
+        // 如果是 PDF，优先尝试按章节拆分编译
+        if is_pdf {
+            match compile_by_chapters(&file, &pipeline, &cli.output).await {
+                Ok(path) => {
+                    println!("\n结果已保存到: {}", path);
+                    return Ok(());
+                }
+                Err(e) => {
+                    println!("  ℹ 按章节编译不可用: {}，回退到全书编译", e);
+                }
+            }
+        }
+
         let pdf_scan = if is_pdf {
             Some(scan::inspect_pdf(path, 20).map_err(|e| anyhow::anyhow!("PDF 探测失败: {}", e))?)
         } else {
@@ -396,6 +410,159 @@ async fn run() -> anyhow::Result<()> {
     }
 
     Ok(())
+}
+
+/// 按章节拆分编译 PDF
+///
+/// 1. 提取 PDF 目录结构
+/// 2. 每章独立提取文本并编译
+/// 3. 每章保存到独立子目录
+/// 4. 汇总所有卡片到顶层目录
+async fn compile_by_chapters(
+    file_path: &str,
+    pipeline: &Pipeline,
+    output_dir: &str,
+) -> anyhow::Result<String> {
+    // 1. 获取章节列表
+    let segments = cardnote_compiler::converter::split_pdf_by_toc(file_path)
+        .map_err(|e| anyhow::anyhow!("{}", e))?;
+
+    if segments.len() < 2 {
+        return Err(anyhow::anyhow!(
+            "PDF 目录章节数不足 ({} 章)，无法按章节拆分",
+            segments.len()
+        ));
+    }
+
+    // 2. 提取书名（PDF 文件名）
+    let book_name = Path::new(file_path)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("未命名");
+
+    println!("检测到 {} 个章节，按章节拆分编译...", segments.len());
+
+    // 3. 创建基础输出目录
+    let base_dir = cardnote_compiler::output::create_output_dir(output_dir, Some(book_name))
+        .await
+        .map_err(|e| anyhow::anyhow!("创建输出目录失败: {}", e))?;
+
+    // 4. 临时目录用于拆分 PDF
+    let temp_dir = tempfile::tempdir().map_err(|e| anyhow::anyhow!("创建临时目录失败: {}", e))?;
+
+    let mut all_cards: Vec<cardnote_compiler::models::Card> = Vec::new();
+    let mut success_count = 0;
+    let mut failed_chapters: Vec<String> = Vec::new();
+
+    for (idx, (title, start, end)) in segments.iter().enumerate() {
+        println!("\n  [章节 {}/{}] {}", idx + 1, segments.len(), title);
+
+        // 提取章节 PDF 到临时文件
+        let seg_path = temp_dir.path().join(format!("seg_{:03}.pdf", idx));
+        if let Err(e) = cardnote_compiler::converter::save_pdf_range(
+            file_path,
+            &seg_path.to_string_lossy(),
+            *start,
+            *end,
+        ) {
+            eprintln!("    ⚠ 章节拆分失败: {}", e);
+            failed_chapters.push(title.clone());
+            continue;
+        }
+
+        // 转换为 Markdown
+        let chapter_md = match cardnote_compiler::converter::convert_to_markdown_async(
+            &seg_path.to_string_lossy(),
+        )
+        .await
+        {
+            Ok(md) => md,
+            Err(e) => {
+                eprintln!("    ⚠ 章节文本提取失败: {}", e);
+                failed_chapters.push(title.clone());
+                continue;
+            }
+        };
+
+        if chapter_md.trim().len() < 50 {
+            println!("    ℹ 章节文本过短，跳过");
+            continue;
+        }
+
+        // 编译章节
+        let mut result = match pipeline.run(&chapter_md, file_path).await {
+            Ok(r) => r,
+            Err(e) => {
+                eprintln!("    ⚠ 章节编译失败: {}", e);
+                failed_chapters.push(title.clone());
+                continue;
+            }
+        };
+
+        // 补充精确的 ref 引用信息
+        let precise_ref = format!(
+            "《{}》| {} | 第{}-{}页",
+            book_name,
+            title,
+            start + 1,
+            end + 1
+        );
+        for card in &mut result.cards {
+            if card.reference.is_empty() {
+                card.reference = precise_ref.clone();
+            } else {
+                card.reference = format!("{} | {}", precise_ref, card.reference);
+            }
+        }
+
+        // 保存章节结果到独立子目录
+        let safe_title = cardnote_compiler::output::sanitize_filename(title);
+        let chapter_dir = base_dir.join(&safe_title);
+        tokio::fs::create_dir_all(&chapter_dir).await?;
+        if let Err(e) = cardnote_compiler::output::save_single_to_dir(&result, &chapter_dir).await {
+            eprintln!("    ⚠ 章节保存失败: {}", e);
+            failed_chapters.push(title.clone());
+            continue;
+        }
+
+        all_cards.extend(result.cards.clone());
+        success_count += 1;
+        println!("    ✓ {} 张卡片", result.cards.len());
+    }
+
+    // 保存汇总
+    let summary = cardnote_compiler::models::Summary {
+        title: book_name.to_string(),
+        overview: format!(
+            "共 {} 章 | 成功 {} 章 | 失败 {} 章 | {} 张卡片",
+            segments.len(),
+            success_count,
+            failed_chapters.len(),
+            all_cards.len()
+        ),
+        key_points: failed_chapters
+            .iter()
+            .map(|f| format!("⚠ 编译失败: {}", f))
+            .collect(),
+        structure: String::new(),
+    };
+    let summary_path = base_dir.join("summary.md");
+    tokio::fs::write(&summary_path, summary.to_markdown()).await?;
+
+    let all_cards_path = base_dir.join("all_cards.md");
+    let content: Vec<String> = all_cards.iter().map(|c| c.to_markdown()).collect();
+    tokio::fs::write(&all_cards_path, content.join("\n")).await?;
+
+    println!(
+        "\n  总计: {} 章成功 | {} 张卡片",
+        success_count,
+        all_cards.len()
+    );
+    if !failed_chapters.is_empty() {
+        println!("  失败章节: {}", failed_chapters.join(", "));
+    }
+
+    Ok(base_dir.to_string_lossy().to_string())
 }
 
 async fn run_phase(

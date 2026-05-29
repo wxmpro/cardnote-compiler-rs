@@ -796,7 +796,8 @@ fn split_markdown_by_headings(text: &str) -> String {
 }
 
 /// 按 TOC 拆分 PDF
-fn split_pdf_by_toc(file_path: &str) -> Result<Vec<(String, usize, usize)>> {
+/// 按 TOC 拆分 PDF，返回 (章节标题, 起始页, 结束页) 列表
+pub fn split_pdf_by_toc(file_path: &str) -> Result<Vec<(String, usize, usize)>> {
     let output = Command::new("python3")
         .arg("-c")
         .arg(
@@ -842,7 +843,8 @@ else:
 }
 
 /// 保存 PDF 页面范围
-fn save_pdf_range(src: &str, dst: &str, start: usize, end: usize) -> Result<()> {
+/// 保存 PDF 页面范围到临时文件
+pub fn save_pdf_range(src: &str, dst: &str, start: usize, end: usize) -> Result<()> {
     let output = Command::new("python3")
         .arg("-c")
         .arg(
