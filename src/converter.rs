@@ -1054,24 +1054,29 @@ pub struct BookMetadata {
 /// 1. PDF Info 字典（Title, Author 等）—— 最准确
 /// 2. 文本正则匹配（版权页）—— fallback
 /// 3. 文件名 —— 最后手段
+/// 从 PDF 提取书籍元数据
+///
+/// 书名提取策略（按优先级）：
+/// 1. PDF Info 字典的 Title 字段（作者/出版者显式设置的元数据，最权威）
+/// 2. 文件名（用户已命名，次优 fallback）
+///
+/// 不尝试从文本内容中猜测书名——文本搜索误报率极高，
+/// 且文件名通常已包含正确书名。
 pub fn extract_pdf_metadata(file_path: &str) -> BookMetadata {
     let mut meta = BookMetadata::default();
 
-    // 策略1：从 PDF Info 字典提取
+    // 策略1：从 PDF Info 字典提取（最权威来源）
     if let Ok(doc) = lopdf::Document::load(file_path) {
         meta.page_count = doc.get_pages().len();
 
-        // 从 trailer 的 Info 字典提取元数据
         if let Ok(info_ref) = doc.trailer.get(b"Info") {
             if let lopdf::Object::Reference(id) = info_ref {
                 if let Ok(info_obj) = doc.get_object(*id) {
                     if let Ok(info_dict) = info_obj.as_dict() {
-                        // Title
+                        // Title：仅当非空且不是页码标记时才采用
                         if let Ok(obj) = info_dict.get(b"Title") {
                             let raw = pdf_string_value(obj);
-                            // [v0.1.12] 启发式校验：过滤掉看起来像页码/章节标记的 Title
-                            // PDF 生成工具常把 "## 第 1 页"、"Page 1" 等填入 Title 字段
-                            if !looks_like_page_marker(&raw) {
+                            if !raw.trim().is_empty() && !looks_like_page_marker(&raw) {
                                 meta.title = raw;
                             }
                         }
@@ -1089,14 +1094,8 @@ pub fn extract_pdf_metadata(file_path: &str) -> BookMetadata {
         }
     }
 
-    // 策略2：如果 Info 字典没有 Title，从文本前3页正则提取
-    if meta.title.is_empty() {
-        if let Ok(text) = read_pdf_raw(file_path) {
-            meta.title = extract_title_from_text(&text);
-        }
-    }
-
-    // 策略3：如果还没有，用文件名
+    // 策略2：Info 字典无有效 Title 时，直接用文件名
+    // 文件名是用户显式命名的，比文本搜索更可靠
     if meta.title.is_empty() {
         meta.title = Path::new(file_path)
             .file_stem()
@@ -1157,59 +1156,6 @@ fn looks_like_page_marker(s: &str) -> bool {
     }
 
     false
-}
-
-/// 从文本中用正则提取书名
-///
-/// 匹配模式：
-/// - "书名：人生模式——识别并优化你的核心认知"
-/// - "书 名：人生模式"
-fn extract_title_from_text(text: &str) -> String {
-    // 模式1: "书名：XXX" 或 "书 名：XXX"
-    let re1 = regex::Regex::new(r"书\s*名[：:]\s*(.+?)(?:\n|$)").unwrap();
-    if let Some(cap) = re1.captures(text) {
-        let title = cap[1].trim();
-        // 清理 CIP 数据中的杂乱内容，只取第一个书名
-        if let Some(idx) = title.find("作 者") {
-            return title[..idx].trim().to_string();
-        }
-        if let Some(idx) = title.find("作者") {
-            return title[..idx].trim().to_string();
-        }
-        return title.to_string();
-    }
-
-    // 模式2: 从文本前100行搜索最像书名的行
-    // [v0.1.13] 改进：排除页码标记、Markdown标题、出版社名等常见误判
-    let page_marker = regex::Regex::new(r"第\s*\d+\s*[页章节篇]").unwrap();
-    let non_title_words = ["出版", "印刷", "发行", "定价", "ISBN", "CIP", "版权", "总策划",
-                           "责任编辑", "封面设计", "排版", "印张", "字数", "版次", "印次",
-                           "经销", "邮购", "客服", "网址", "微博", "微信", "公众号",
-                           "作者简介", "内容简介", "推荐序", "序言", "前言", "目录",
-                           "参考资料", "注释", "致谢", "附录", "参考文献"];
-
-    let lines: Vec<&str> = text.lines().take(100).collect();
-    for line in &lines {
-        let trimmed = line.trim();
-        if trimmed.len() > 3
-            && trimmed.len() < 80
-            && !trimmed.starts_with('#')           // Markdown 标题标记
-            && !trimmed.starts_with("ISBN")
-            && !trimmed.starts_with("http")
-            && !trimmed.starts_with("©")
-            && !trimmed.starts_with("版权")
-            && !trimmed.starts_with("CIP")
-            && !page_marker.is_match(trimmed)       // "第 X 页/章"
-            && !non_title_words.iter().any(|w| trimmed.contains(w))
-        {
-            let has_chinese = trimmed.chars().any(|c| c as u32 >= 0x4E00 && c as u32 <= 0x9FFF);
-            if has_chinese {
-                return trimmed.to_string();
-            }
-        }
-    }
-
-    String::new()
 }
 
 #[cfg(test)]

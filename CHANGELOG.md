@@ -2,6 +2,20 @@
 
 All notable changes to cardnote-compiler-rs are documented here.
 
+## [0.1.14] - 2026-05-29
+
+### Changed
+
+- **重构书名提取逻辑**（`converter.rs` `extract_pdf_metadata`）
+  - **删除策略2（文本搜索）**：原逻辑从文本中搜索 `"书名：XXX"` 或遍历前N行找第一个中文行，误报率极高，且与 `read_pdf_raw` 注入的 `## 第 X 页` 标记耦合产生污染。
+  - **简化策略**：只剩两步——① PDF Info 字典 Title 字段（元数据，最权威）；② 文件名（用户已命名，次优 fallback）。
+  - **删除死代码**：`extract_title_from_text` 函数及其 50+ 行文本搜索逻辑。
+  - **保留 `looks_like_page_marker`**：继续用于校验 Info 字典的 Title 是否被 PDF 生成工具污染。
+  - **结论**：书名只有两个可信来源——元数据 和 文件名。文本搜索不能作为书名提取手段。
+
+### Changed
+- **Cargo.toml**：版本号 `0.1.13` → `0.1.14`
+
 ## [0.1.13] - 2026-05-29
 
 ### Fixed
