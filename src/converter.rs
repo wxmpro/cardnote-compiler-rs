@@ -1179,22 +1179,29 @@ fn extract_title_from_text(text: &str) -> String {
         return title.to_string();
     }
 
-    // 模式2: 大标题格式（第一页的大字标题）
-    let lines: Vec<&str> = text.lines().take(50).collect();
+    // 模式2: 从文本前100行搜索最像书名的行
+    // [v0.1.13] 改进：排除页码标记、Markdown标题、出版社名等常见误判
+    let page_marker = regex::Regex::new(r"第\s*\d+\s*[页章节篇]").unwrap();
+    let non_title_words = ["出版", "印刷", "发行", "定价", "ISBN", "CIP", "版权", "总策划",
+                           "责任编辑", "封面设计", "排版", "印张", "字数", "版次", "印次",
+                           "经销", "邮购", "客服", "网址", "微博", "微信", "公众号",
+                           "作者简介", "内容简介", "推荐序", "序言", "前言", "目录",
+                           "参考资料", "注释", "致谢", "附录", "参考文献"];
+
+    let lines: Vec<&str> = text.lines().take(100).collect();
     for line in &lines {
         let trimmed = line.trim();
-        if trimmed.len() > 5
+        if trimmed.len() > 3
             && trimmed.len() < 80
+            && !trimmed.starts_with('#')           // Markdown 标题标记
             && !trimmed.starts_with("ISBN")
             && !trimmed.starts_with("http")
             && !trimmed.starts_with("©")
             && !trimmed.starts_with("版权")
             && !trimmed.starts_with("CIP")
-            && !trimmed.contains("出版社")
-            && !trimmed.contains("印刷")
-            && !trimmed.contains("定价")
+            && !page_marker.is_match(trimmed)       // "第 X 页/章"
+            && !non_title_words.iter().any(|w| trimmed.contains(w))
         {
-            // 如果这行看起来像书名（包含中文，不含常见非书名词汇）
             let has_chinese = trimmed.chars().any(|c| c as u32 >= 0x4E00 && c as u32 <= 0x9FFF);
             if has_chinese {
                 return trimmed.to_string();
