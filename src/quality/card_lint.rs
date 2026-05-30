@@ -1,6 +1,45 @@
 use regex::Regex;
+use std::sync::LazyLock;
 
 use crate::models::{Card, CardStatus, CardType};
+
+// ═══════════════════════════════════════════════════════
+// [C2] 预编译正则表达式（避免每次 lint 重复编译）
+// ═══════════════════════════════════════════════════════
+
+static RE_REF_PAGE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^(.+)_第(\d+)(?:-\d+)?页$").expect("硬编码正则")
+});
+static RE_BOOK_PAGE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^本书第(\d+)页$").expect("硬编码正则")
+});
+static RE_CITE_P: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^(.+)[,，]\s*p[\.．]?(\d+).*$").expect("硬编码正则")
+});
+static RE_P_DOT: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^(.+)_p\.(\d+)$").expect("硬编码正则")
+});
+static RE_AUTHOR_BOOK: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^阳志平《([^》]+)》").expect("硬编码正则")
+});
+static RE_AUTHOR_BOOK_FULL: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^阳志平《([^》]+)》.*$").expect("硬编码正则")
+});
+static RE_AUTHOR_YEAR: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^([^_]+)_\d{4}_.*$").expect("硬编码正则")
+});
+static RE_PAREN_BOOK: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^([^（(]+)[（(].*[)）].*$").expect("硬编码正则")
+});
+static RE_EXTRACT_BOOK: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"《([^》]+)》").expect("硬编码正则")
+});
+
+// [M1] 已知书名列表（从硬编码提取为可维护常量）
+const KNOWN_BOOKS: &[&str] = &[
+    "人生模式",
+    "聪明的阅读者",
+];
 
 /// 卡片质量检查配置
 #[derive(Debug, Clone)]
@@ -528,8 +567,7 @@ fn fix_ref_format(card: &mut Card, source_text: &str) {
     // ── 规则1: xxx_第数字页 或 xxx_第数字-数字页 → xxx_p数字 ──
     // 例: 人生模式_第79-84页 → 人生模式_p79
     // 例: 阳志平《聪明的阅读者》第二篇行动模式_第126-126页 → 阳志平《聪明的阅读者》第二篇行动模式_p126
-    let re1 = Regex::new(r"^(.+)_第(\d+)(?:-\d+)?页$").unwrap();
-    if let Some(caps) = re1.captures(&fixed) {
+    if let Some(caps) = RE_REF_PAGE.captures(&fixed) {
         let prefix = caps.get(1).unwrap().as_str();
         let page = caps.get(2).unwrap().as_str();
         fixed = format!("{}_p{}", prefix, page);
@@ -537,8 +575,7 @@ fn fix_ref_format(card: &mut Card, source_text: &str) {
 
     // ── 规则2: 本书第数字页 → 推断书名_p数字 ──
     // 例: 本书第330页 → 人生模式_p330
-    let re2 = Regex::new(r"^本书第(\d+)页$").unwrap();
-    if let Some(caps) = re2.captures(&fixed) {
+    if let Some(caps) = RE_BOOK_PAGE.captures(&fixed) {
         let page = caps.get(1).unwrap().as_str();
         let book_name = infer_book_name(source_text);
         fixed = format!("{}_p{}", book_name, page);
@@ -546,8 +583,7 @@ fn fix_ref_format(card: &mut Card, source_text: &str) {
 
     // ── 规则3: xxx，p.数字 或 xxx, p.数字 → 提取书名_p数字 ──
     // 例: 阳志平《聪明的阅读者》，p.187 及该章内多处 → 聪明的阅读者_p187
-    let re3 = Regex::new(r"^(.+)[,，]\s*p[\.．]?(\d+).*$").unwrap();
-    if let Some(caps) = re3.captures(&fixed) {
+    if let Some(caps) = RE_CITE_P.captures(&fixed) {
         let prefix = caps.get(1).unwrap().as_str();
         let page = caps.get(2).unwrap().as_str();
         // 去掉"阳志平"前缀，提取书名号内的内容
@@ -557,8 +593,7 @@ fn fix_ref_format(card: &mut Card, source_text: &str) {
     }
 
     // ── 规则4: xxx_p.数字 → xxx_p数字 ──
-    let re4 = Regex::new(r"^(.+)_p\.(\d+)$").unwrap();
-    if let Some(caps) = re4.captures(&fixed) {
+    if let Some(caps) = RE_P_DOT.captures(&fixed) {
         let prefix = caps.get(1).unwrap().as_str();
         let page = caps.get(2).unwrap().as_str();
         fixed = format!("{}_p{}", prefix, page);
@@ -566,8 +601,7 @@ fn fix_ref_format(card: &mut Card, source_text: &str) {
 
     // ── 规则5: 阳志平《书名》..._p数字 → 书名_p数字 ──
     // 去掉作者前缀，保留书名号内的书名
-    let re5 = Regex::new(r"^阳志平《([^》]+)》").unwrap();
-    if let Some(caps) = re5.captures(&fixed) {
+    if let Some(caps) = RE_AUTHOR_BOOK.captures(&fixed) {
         let book_name = caps.get(1).unwrap().as_str().trim();
         // 如果后面有 _p 后缀，保留
         if let Some(p_idx) = fixed.rfind("_p") {
@@ -576,9 +610,8 @@ fn fix_ref_format(card: &mut Card, source_text: &str) {
     }
 
     // ── 规则6: 阳志平《书名》...（无 _p 后缀）→ 提取书名，尝试找页码 ──
-    let re6 = Regex::new(r"^阳志平《([^》]+)》.*$").unwrap();
-    if re6.is_match(&fixed) && !fixed.contains("_p") {
-        if let Some(caps) = re6.captures(&fixed) {
+    if RE_AUTHOR_BOOK_FULL.is_match(&fixed) && !fixed.contains("_p") {
+        if let Some(caps) = RE_AUTHOR_BOOK_FULL.captures(&fixed) {
             let book_name = caps.get(1).unwrap().as_str().trim();
             // 尝试从文本中查找该书的引用页码
             if let Some(page) = find_book_page_in_source(book_name, source_text) {
@@ -588,9 +621,8 @@ fn fix_ref_format(card: &mut Card, source_text: &str) {
     }
 
     // ── 规则7: 作者_年份_标题（如 杨中芳、杨宜音_2001_系列研究）→ 简化 ──
-    let re7 = Regex::new(r"^([^_]+)_\d{4}_.*$").unwrap();
-    if re7.is_match(&fixed) && !fixed.contains("_p") {
-        if let Some(caps) = re7.captures(&fixed) {
+    if RE_AUTHOR_YEAR.is_match(&fixed) && !fixed.contains("_p") {
+        if let Some(caps) = RE_AUTHOR_YEAR.captures(&fixed) {
             let author = caps.get(1).unwrap().as_str().trim();
             // 尝试从文本中查找该作者的引用页码
             if let Some(page) = find_author_page_in_source(author, source_text) {
@@ -600,9 +632,8 @@ fn fix_ref_format(card: &mut Card, source_text: &str) {
     }
 
     // ── 规则8: 作者（年份）书名（如 乡土人生（费孝通，1947））→ 提取书名 ──
-    let re8 = Regex::new(r"^([^（(]+)[（(].*[)）].*$").unwrap();
-    if re8.is_match(&fixed) && !fixed.contains("_p") {
-        if let Some(caps) = re8.captures(&fixed) {
+    if RE_PAREN_BOOK.is_match(&fixed) && !fixed.contains("_p") {
+        if let Some(caps) = RE_PAREN_BOOK.captures(&fixed) {
             let book = caps.get(1).unwrap().as_str().trim();
             if let Some(page) = find_book_page_in_source(book, source_text) {
                 fixed = format!("人生模式_p{}", page);
@@ -640,21 +671,20 @@ fn is_valid_v3_ref(ref_text: &str) -> bool {
 }
 
 /// 从文本中推断书名
+/// [M1] 从硬编码提取为可维护常量列表
 fn infer_book_name(source_text: &str) -> String {
     // 优先从文本中的标题提取
-    if source_text.contains("人生模式") {
-        "人生模式".to_string()
-    } else if source_text.contains("聪明的阅读者") {
-        "聪明的阅读者".to_string()
-    } else {
-        "来源".to_string()
+    for book in KNOWN_BOOKS {
+        if source_text.contains(book) {
+            return book.to_string();
+        }
     }
+    "来源".to_string()
 }
 
 /// 从前缀中提取书名号内的书名
 fn extract_book_name(prefix: &str) -> String {
-    let re = Regex::new(r"《([^》]+)》").unwrap();
-    if let Some(caps) = re.captures(prefix) {
+    if let Some(caps) = RE_EXTRACT_BOOK.captures(prefix) {
         caps.get(1).unwrap().as_str().trim().to_string()
     } else {
         prefix.to_string()

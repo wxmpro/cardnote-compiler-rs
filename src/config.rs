@@ -16,7 +16,8 @@ use crate::providers::{
 
 /// 单块最大字符数，超过则启用 Map-Reduce
 pub const CHUNK_SIZE: usize = 50000;
-/// 并行编译的最大线程数（避免触发 API 限流）
+/// 串行编译（避免触发 API 限流）
+/// [M4] 实际为串行，注释已修正以反映真实行为
 pub const MAX_WORKERS: usize = 1;
 
 // ═══════════════════════════════════════════════════════
@@ -432,6 +433,14 @@ fn save_to_env(cred: &ProviderCredential) -> Result<()> {
     );
 
     std::fs::write(&env_path, env_content).map_err(AppError::Io)?;
+
+    // [C4] 设置文件权限为 600，防止多用户系统下 API key 泄露
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let permissions = std::fs::Permissions::from_mode(0o600);
+        std::fs::set_permissions(&env_path, permissions).map_err(AppError::Io)?;
+    }
 
     println!(
         "  💾 配置已保存到: {}\n",

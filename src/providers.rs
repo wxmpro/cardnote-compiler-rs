@@ -152,7 +152,47 @@ impl ProviderRegistry {
         self.providers.insert(provider.id.clone(), provider);
     }
 
+    /// [H7] 优先从外部配置文件加载提供商，避免新增需重编译
     fn register_all(&mut self) {
+        let loaded = self.load_from_config_file();
+        if !loaded {
+            self.register_builtin();
+        }
+    }
+
+    /// 从配置文件加载提供商列表
+    /// 搜索路径：~/.config/cardnote/providers.json → ./providers.json
+    fn load_from_config_file(&mut self) -> bool {
+        let paths = [
+            shellexpand::tilde("~/.config/cardnote/providers.json").to_string(),
+            "providers.json".to_string(),
+        ];
+        for path in &paths {
+            if let Ok(content) = std::fs::read_to_string(path) {
+                if let Ok(providers) = serde_json::from_str::<Vec<Provider>>(&content) {
+                    for p in providers {
+                        self.register(p);
+                    }
+                    return !self.providers.is_empty();
+                }
+            }
+        }
+        false
+    }
+
+    /// 导出默认内置配置为 JSON 字符串
+    pub fn export_builtin_config() -> String {
+        let mut registry = Self {
+            providers: HashMap::new(),
+        };
+        registry.register_builtin();
+        let providers: Vec<_> = registry.providers.into_values().collect();
+        serde_json::to_string_pretty(&providers)
+            .unwrap_or_else(|e| format!("{{\"error\": \"{}\"}}", e))
+    }
+
+    /// 内置硬编码配置（fallback，当外部配置文件不存在时使用）
+    fn register_builtin(&mut self) {
         // Anthropic (Claude)
         self.register(Provider {
             id: "anthropic".to_string(),

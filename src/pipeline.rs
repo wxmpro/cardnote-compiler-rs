@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, LazyLock};
 
 use regex::Regex;
 use serde::{Deserialize, Serialize};
@@ -46,12 +46,14 @@ impl CompileCache {
     const CACHE_DIR: &'static str = ".cardc_cache";
 
     /// 计算文档哈希
+    /// [M5] 使用稳定的 FNV-1a 哈希，避免 Rust 版本升级后 DefaultHasher 变化导致缓存全部失效
     fn hash_document(document: &str) -> String {
-        use std::collections::hash_map::DefaultHasher;
-        use std::hash::{Hash, Hasher};
-        let mut hasher = DefaultHasher::new();
-        document.hash(&mut hasher);
-        format!("{:x}", hasher.finish())
+        let mut hash: u64 = 0xcbf29ce484222325; // FNV-1a 偏移基值
+        for byte in document.bytes() {
+            hash ^= byte as u64;
+            hash = hash.wrapping_mul(0x100000001b3); // FNV-1a 质数
+        }
+        format!("{:x}", hash)
     }
 
     /// 获取缓存文件路径
@@ -226,12 +228,15 @@ impl Pipeline {
         println!("{}", "=".repeat(60));
         println!("知识编译引擎启动");
         println!("{}", "=".repeat(60));
-        println!("  文档大小: {} 字符", document.len());
+        // [H3] 使用 chars().count() 获取真实字符数（中文不再虚高 3 倍）
+        let doc_char_count = document.chars().count();
+        println!("  文档大小: {} 字符", doc_char_count);
         let doc_detection = DocTypeDetector::detect_with_confidence(document);
-        let plan_summary = CardPlanner::summary(doc_detection.doc_type, document.len());
+        let plan_summary = CardPlanner::summary(doc_detection.doc_type, doc_char_count);
         println!("  卡片规划: {}", plan_summary);
 
-        if document.len() <= CHUNK_SIZE {
+        // [H3] 按字符数判断是否需要分块，与 CHUNK_SIZE 的语义（字符数）保持一致
+        if document.chars().count() <= CHUNK_SIZE {
             self.run_single(document, source_file, doc_detection.doc_type)
                 .await
         } else {
@@ -546,7 +551,7 @@ impl Pipeline {
             .iter()
             .map(|c| ChunkInfo {
                 title_path: c.title_path.clone(),
-                size: c.document.len(),
+                size: c.document.chars().count(),
                 entities: c.entities.len(),
                 cards: c.cards.len(),
                 relations: c.relations.len(),
@@ -786,46 +791,28 @@ async fn compile_chunk(
     }
 
     // summary / entities / cards 串行执行，避免并发 API 请求过多触发限流
-    // 对每个阶段的失败进行容错处理：失败时使用默认值并继续
-    let summary = match with_retry("摘要", || {
+    // [H6] 改为显式错误传播：子阶段失败时返回 Err，由上层调用方（run_map_reduce）
+    // 进行重试或记录到 failed_chunks，避免静默用空默认值替换有效数据
+    let summary = with_retry("摘要", || {
         generate_summary(&document, ctx_ref, &load_prompt)
     })
-    .await
-    {
-        Ok(s) => s,
-        Err(_) => Summary::default(),
-    };
+    .await?;
 
-    let entities = match with_retry("实体", || {
+    let entities = with_retry("实体", || {
         extract_entities(&document, ctx_ref, ctx_ref, &load_prompt)
     })
-    .await
-    {
-        Ok(e) => e,
-        Err(_) => Vec::new(),
-    };
+    .await?;
 
-    let cards = match with_retry("卡片", || {
+    let cards = with_retry("卡片", || {
         generate_cards(&document, doc_type, ctx_ref, &load_prompt)
     })
-    .await
-    {
-        Ok(c) => c,
-        Err(_) => Vec::new(),
-    };
+    .await?;
 
     // graph 依赖 entities 结果，顺序执行
-    let graph = match with_retry("图谱", || {
+    let graph = with_retry("图谱", || {
         build_graph(&document, &entities, ctx_ref, ctx_ref, &load_prompt)
     })
-    .await
-    {
-        Ok(g) => g,
-        Err(_) => KnowledgeGraph {
-            entities: Vec::new(),
-            relations: Vec::new(),
-        },
-    };
+    .await?;
 
     Ok(ChunkResult {
         document: document.clone(),
@@ -840,8 +827,11 @@ async fn compile_chunk(
 // ── 辅助函数 ──
 
 fn heading_regex() -> &'static Regex {
-    static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| Regex::new(r"^(#{1,3})\s+(.+)$").expect("硬编码正则应始终有效"))
+    // [M3] 统一使用 LazyLock（Rust 1.80+ 标准库），与代码库其他位置保持一致
+    static RE: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r"^(#{1,3})\s+(.+)$").expect("硬编码正则应始终有效")
+    });
+    &RE
 }
 
 /// 提取重叠内容用于下一个 chunk 的上下文

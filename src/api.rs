@@ -1,4 +1,4 @@
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, atomic::{AtomicUsize, Ordering}};
 use std::time::Duration;
 
 use colored::Colorize;
@@ -22,8 +22,9 @@ pub struct LlmClient {
     pub model: String,
     /// 同一提供商中支持 JSON mode 的备用模型列表
     fallback_models: Vec<String>,
-    /// 当前使用的模型索引（0=主模型，1+=fallback），用 Arc<Mutex> 支持 Clone + &self 调用
-    current_model_idx: Arc<Mutex<usize>>,
+    /// 当前使用的模型索引（0=主模型，1+=fallback），用 Arc<AtomicUsize> 支持 Clone + &self 调用
+    /// [C1] 改用 AtomicUsize 避免 async 上下文中阻塞 tokio worker
+    current_model_idx: Arc<AtomicUsize>,
 }
 
 impl LlmClient {
@@ -43,13 +44,13 @@ impl LlmClient {
             base_url,
             model,
             fallback_models,
-            current_model_idx: Arc::new(Mutex::new(0)),
+            current_model_idx: Arc::new(AtomicUsize::new(0)),
         })
     }
 
     /// 获取当前实际使用的模型 ID
     fn current_model(&self) -> String {
-        let idx = *self.current_model_idx.lock().unwrap();
+        let idx = self.current_model_idx.load(Ordering::Relaxed);
         if idx == 0 {
             self.model.clone()
         } else {
@@ -62,15 +63,16 @@ impl LlmClient {
 
     /// 切换到下一个可用模型，返回是否切换成功
     fn switch_to_next_model(&self) -> bool {
-        let mut idx = self.current_model_idx.lock().unwrap();
-        if *idx <= self.fallback_models.len() {
-            *idx += 1;
-            if *idx <= self.fallback_models.len() {
-                let new_model = if *idx == 0 {
+        let idx = self.current_model_idx.load(Ordering::Relaxed);
+        if idx <= self.fallback_models.len() {
+            let new_idx = idx + 1;
+            self.current_model_idx.store(new_idx, Ordering::Relaxed);
+            if new_idx <= self.fallback_models.len() {
+                let new_model = if new_idx == 0 {
                     self.model.clone()
                 } else {
                     self.fallback_models
-                        .get(*idx - 1)
+                        .get(new_idx - 1)
                         .cloned()
                         .unwrap_or_else(|| self.model.clone())
                 };
@@ -86,7 +88,7 @@ impl LlmClient {
 
     /// 重置到主模型（每次新请求前调用）
     fn reset_model(&self) {
-        *self.current_model_idx.lock().unwrap() = 0;
+        self.current_model_idx.store(0, Ordering::Relaxed);
     }
 
     /// 发送聊天请求，返回原始响应 JSON
@@ -275,6 +277,14 @@ pub fn create_client(
     let effective_base_url = base_url
         .or_else(|| get_provider_config(provider).map(|c| c.base_url.to_string()))
         .unwrap_or_else(|| "https://api.deepseek.com/v1".to_string());
+
+    // [C5] 验证 base_url 格式，防止请求到恶意服务器
+    if let Err(e) = reqwest::Url::parse(&effective_base_url) {
+        return Err(AppError::Config(format!(
+            "无效的 base_url '{}': {}",
+            effective_base_url, e
+        )));
+    }
 
     // 自动查找同一提供商中支持 JSON mode 的 fallback 模型
     let registry = ProviderRegistry::new();
