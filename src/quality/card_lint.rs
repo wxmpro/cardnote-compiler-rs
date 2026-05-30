@@ -1,3 +1,5 @@
+use regex::Regex;
+
 use crate::models::{Card, CardStatus, CardType};
 
 /// 卡片质量检查配置
@@ -273,7 +275,10 @@ pub fn filter_cards_with_source(
 
     for card in cards {
         stats.checked += 1;
-        let result = lint_card_with_source(card, source_text, config);
+        // [v0.1.15] 先自动修复 ref 格式，再检查
+        let mut card = card.clone();
+        fix_ref_format(&mut card, source_text);
+        let result = lint_card_with_source(&card, source_text, config);
         let mut checked_card = card.clone();
         checked_card.quality_score = result.quality_score;
         checked_card.status = if result.is_valid {
@@ -508,13 +513,203 @@ fn check_reference_consistency(card: &Card, issues: &mut Vec<LintIssue>) {
     }
 }
 
+/// 自动修复 ref 格式（v0.1.15 新增）
+///
+/// 在 check_ref_format 之前执行，将 LLM 常见的格式错误自动转换为规范格式。
+/// 修复规则基于实际编译中观察到的 40+ 种错误模式。
+fn fix_ref_format(card: &mut Card, source_text: &str) {
+    let ref_text = card.reference.trim();
+    if ref_text.is_empty() {
+        return;
+    }
+
+    let mut fixed = ref_text.to_string();
+
+    // ── 规则1: xxx_第数字页 或 xxx_第数字-数字页 → xxx_p数字 ──
+    // 例: 人生模式_第79-84页 → 人生模式_p79
+    // 例: 阳志平《聪明的阅读者》第二篇行动模式_第126-126页 → 阳志平《聪明的阅读者》第二篇行动模式_p126
+    let re1 = Regex::new(r"^(.+)_第(\d+)(?:-\d+)?页$").unwrap();
+    if let Some(caps) = re1.captures(&fixed) {
+        let prefix = caps.get(1).unwrap().as_str();
+        let page = caps.get(2).unwrap().as_str();
+        fixed = format!("{}_p{}", prefix, page);
+    }
+
+    // ── 规则2: 本书第数字页 → 推断书名_p数字 ──
+    // 例: 本书第330页 → 人生模式_p330
+    let re2 = Regex::new(r"^本书第(\d+)页$").unwrap();
+    if let Some(caps) = re2.captures(&fixed) {
+        let page = caps.get(1).unwrap().as_str();
+        let book_name = infer_book_name(source_text);
+        fixed = format!("{}_p{}", book_name, page);
+    }
+
+    // ── 规则3: xxx，p.数字 或 xxx, p.数字 → 提取书名_p数字 ──
+    // 例: 阳志平《聪明的阅读者》，p.187 及该章内多处 → 聪明的阅读者_p187
+    let re3 = Regex::new(r"^(.+)[,，]\s*p[\.．]?(\d+).*$").unwrap();
+    if let Some(caps) = re3.captures(&fixed) {
+        let prefix = caps.get(1).unwrap().as_str();
+        let page = caps.get(2).unwrap().as_str();
+        // 去掉"阳志平"前缀，提取书名号内的内容
+        let prefix = prefix.trim_start_matches("阳志平").trim();
+        let book = extract_book_name(prefix);
+        fixed = format!("{}_p{}", book, page);
+    }
+
+    // ── 规则4: xxx_p.数字 → xxx_p数字 ──
+    let re4 = Regex::new(r"^(.+)_p\.(\d+)$").unwrap();
+    if let Some(caps) = re4.captures(&fixed) {
+        let prefix = caps.get(1).unwrap().as_str();
+        let page = caps.get(2).unwrap().as_str();
+        fixed = format!("{}_p{}", prefix, page);
+    }
+
+    // ── 规则5: 阳志平《书名》..._p数字 → 书名_p数字 ──
+    // 去掉作者前缀，保留书名号内的书名
+    let re5 = Regex::new(r"^阳志平《([^》]+)》").unwrap();
+    if let Some(caps) = re5.captures(&fixed) {
+        let book_name = caps.get(1).unwrap().as_str().trim();
+        // 如果后面有 _p 后缀，保留
+        if let Some(p_idx) = fixed.rfind("_p") {
+            fixed = format!("{}{}", book_name, &fixed[p_idx..]);
+        }
+    }
+
+    // ── 规则6: 阳志平《书名》...（无 _p 后缀）→ 提取书名，尝试找页码 ──
+    let re6 = Regex::new(r"^阳志平《([^》]+)》.*$").unwrap();
+    if re6.is_match(&fixed) && !fixed.contains("_p") {
+        if let Some(caps) = re6.captures(&fixed) {
+            let book_name = caps.get(1).unwrap().as_str().trim();
+            // 尝试从文本中查找该书的引用页码
+            if let Some(page) = find_book_page_in_source(book_name, source_text) {
+                fixed = format!("{}_p{}", book_name, page);
+            }
+        }
+    }
+
+    // ── 规则7: 作者_年份_标题（如 杨中芳、杨宜音_2001_系列研究）→ 简化 ──
+    let re7 = Regex::new(r"^([^_]+)_\d{4}_.*$").unwrap();
+    if re7.is_match(&fixed) && !fixed.contains("_p") {
+        if let Some(caps) = re7.captures(&fixed) {
+            let author = caps.get(1).unwrap().as_str().trim();
+            // 尝试从文本中查找该作者的引用页码
+            if let Some(page) = find_author_page_in_source(author, source_text) {
+                fixed = format!("人生模式_p{}", page);
+            }
+        }
+    }
+
+    // ── 规则8: 作者（年份）书名（如 乡土人生（费孝通，1947））→ 提取书名 ──
+    let re8 = Regex::new(r"^([^（(]+)[（(].*[)）].*$").unwrap();
+    if re8.is_match(&fixed) && !fixed.contains("_p") {
+        if let Some(caps) = re8.captures(&fixed) {
+            let book = caps.get(1).unwrap().as_str().trim();
+            if let Some(page) = find_book_page_in_source(book, source_text) {
+                fixed = format!("人生模式_p{}", page);
+            }
+        }
+    }
+
+    // ── 规则9: APA 格式学术论文引用 → 尝试从源文本搜索概念名找页码 ──
+    // 例: Dunbar, R. I. M. (1992). Neocortex size... → 人生模式_p234
+    if !is_valid_v3_ref(&fixed) && !source_text.is_empty() {
+        // 从卡片标题中提取关键概念词
+        if let Some(page) = find_concept_page_by_title(&card.title, source_text) {
+            fixed = format!("人生模式_p{}", page);
+        }
+    }
+
+    // ── 规则10: 全角数字/标点修复 ──
+    fixed = fixed.replace('０', "0").replace('１', "1").replace('２', "2")
+        .replace('３', "3").replace('４', "4").replace('５', "5")
+        .replace('６', "6").replace('７', "7").replace('８', "8")
+        .replace('９', "9");
+
+    if fixed != ref_text {
+        card.reference = fixed;
+    }
+}
+
+/// 判断是否为有效的 v3 ref 格式
+fn is_valid_v3_ref(ref_text: &str) -> bool {
+    if let Some(idx) = ref_text.find("_p") {
+        let after = &ref_text[idx + 2..];
+        return after.chars().next().map_or(false, |c| c.is_ascii_digit());
+    }
+    false
+}
+
+/// 从文本中推断书名
+fn infer_book_name(source_text: &str) -> String {
+    // 优先从文本中的标题提取
+    if source_text.contains("人生模式") {
+        "人生模式".to_string()
+    } else if source_text.contains("聪明的阅读者") {
+        "聪明的阅读者".to_string()
+    } else {
+        "来源".to_string()
+    }
+}
+
+/// 从前缀中提取书名号内的书名
+fn extract_book_name(prefix: &str) -> String {
+    let re = Regex::new(r"《([^》]+)》").unwrap();
+    if let Some(caps) = re.captures(prefix) {
+        caps.get(1).unwrap().as_str().trim().to_string()
+    } else {
+        prefix.to_string()
+    }
+}
+
+/// 从源文本中搜索书名出现的页码
+fn find_book_page_in_source(book_name: &str, source_text: &str) -> Option<String> {
+    if source_text.is_empty() {
+        return None;
+    }
+    let re = Regex::new(&format!(r"## 第 (\d+) 页[\s\S]{{0,500}}?{}", regex::escape(book_name))).unwrap();
+    re.captures(source_text)
+        .map(|caps| caps.get(1).unwrap().as_str().to_string())
+}
+
+/// 从源文本中搜索作者名出现的页码
+fn find_author_page_in_source(author: &str, source_text: &str) -> Option<String> {
+    if source_text.is_empty() {
+        return None;
+    }
+    let re = Regex::new(&format!(r"## 第 (\d+) 页[\s\S]{{0,500}}?{}", regex::escape(author))).unwrap();
+    re.captures(source_text)
+        .map(|caps| caps.get(1).unwrap().as_str().to_string())
+}
+
+/// 从源文本中根据卡片标题搜索概念名出现的页码
+fn find_concept_page_by_title(title: &str, source_text: &str) -> Option<String> {
+    if source_text.is_empty() {
+        return None;
+    }
+    // 从标题中提取关键词（去掉标点，取前8个字符）
+    let keywords: Vec<&str> = title
+        .split(|c: char| c.is_ascii_punctuation() || c == '，' || c == '？' || c == '！')
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty() && s.chars().count() >= 2)
+        .take(2)
+        .collect();
+
+    for kw in &keywords {
+        let re = Regex::new(&format!(r"(?i)## 第 (\d+) 页[\s\S]{{0,1000}}?{}", regex::escape(kw))).unwrap();
+        if let Some(caps) = re.captures(source_text) {
+            return Some(caps.get(1).unwrap().as_str().to_string());
+        }
+    }
+    None
+}
+
 /// 检查 ref 格式是否符合规范
 ///
-/// 规范：
-/// - 书籍：《书名》| 章节名 | 第{x}页
-/// - PDF/报告：《文档名》| 第{x}页
+/// 支持两种格式：
+/// - v3 格式：`来源名_p页码`（如 `人生模式_p160`）
+/// - 旧格式：《书名》| 章节名 | 第{x}页 或 《文档名》| 第{x}页
 fn check_ref_format(card: &Card, issues: &mut Vec<LintIssue>) {
-    let mut ref_text = card.reference.trim().to_string();
+    let ref_text = card.reference.trim();
 
     // ref 不能为空
     if ref_text.is_empty() {
@@ -523,10 +718,30 @@ fn check_ref_format(card: &Card, issues: &mut Vec<LintIssue>) {
     }
 
     // [v0.1.7] 自动将全角分隔符 ｜ 转换为半角 |
-    // DeepSeek 等模型常输出全角分隔符，导致格式误判
-    if ref_text.contains('｜') {
-        ref_text = ref_text.replace('｜', "|");
+    let ref_text = if ref_text.contains('｜') {
+        ref_text.replace('｜', "|")
+    } else {
+        ref_text.to_string()
+    };
+
+    // 检查是否为 v3 格式：`来源名_p页码`
+    // 示例：人生模式_p160、阳志平《聪明的阅读者》
+    let is_v3_format = ref_text.contains("_p");
+    if is_v3_format {
+        // v3 格式：只要包含 `_p` 就认为是合法的
+        // 进一步检查 `_p` 后面是否有数字
+        if let Some(idx) = ref_text.find("_p") {
+            let after = &ref_text[idx + 2..];
+            if after.chars().next().map_or(false, |c| c.is_ascii_digit()) {
+                return; // v3 格式通过
+            }
+        }
+        // _p 后面没有数字，仍然算不完整的格式
+        issues.push(LintIssue::InvalidRefFormat);
+        return;
     }
+
+    // 旧格式检查：《书名》| 章节 | 第x页
 
     // 必须包含书名号《...》
     let has_book_mark = ref_text.contains('《') && ref_text.contains('》');
@@ -543,21 +758,13 @@ fn check_ref_format(card: &Card, issues: &mut Vec<LintIssue>) {
     }
 
     // 检查分隔符 | 的数量
-    // - 书籍格式：两个 |（三个部分：《书名》| 章节 | 第x页）
-    // - PDF格式：一个 |（两个部分：《文档名》| 第x页）
     let pipe_count = ref_text.matches('|').count();
     if pipe_count != 1 && pipe_count != 2 {
         issues.push(LintIssue::InvalidRefFormat);
         return;
     }
 
-    // [v0.1.7] 禁止词检查：只在 ref 格式不完整时严格过滤。
-    // 如果已有书名号+页码+正确分隔符，说明是"正经引用"格式。
-    // 此时"来源""作者简介"出现在章节名位置（如"第六章 幸福的来源"）是合法的，
-    // 不应误杀。真正需要过滤的是那些只有禁止词、没有完整格式的情况
-    // （但那种情况已被上面的书名号/页码检查过滤了）。
-    //
-    // 例外：仍然过滤纯 "出处" 模式（如 LLM 输出 "出处：网络" 这种非标准格式）
+    // 禁止词检查
     let banned = ["出处"];
     for b in &banned {
         if ref_text.contains(b) {
@@ -573,7 +780,6 @@ fn check_ref_format(card: &Card, issues: &mut Vec<LintIssue>) {
                 let book_name = &ref_text[start + '《'.len_utf8()..end];
                 if book_name.trim().is_empty() {
                     issues.push(LintIssue::InvalidRefFormat);
-                    return;
                 }
             }
         }

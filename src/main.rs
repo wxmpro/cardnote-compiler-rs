@@ -8,10 +8,9 @@ use cardnote_compiler::api::create_client;
 use cardnote_compiler::config::{find_env_file, get_api_config, get_provider_label};
 use cardnote_compiler::converter::{
     convert_to_markdown_async, convert_to_markdown_async_with_timeout,
-    extract_pdf_metadata, guess_title,
+    extract_pdf_metadata,
 };
 use cardnote_compiler::diagnostics;
-use cardnote_compiler::models::Document;
 use cardnote_compiler::pipeline::Pipeline;
 use cardnote_compiler::quality;
 use cardnote_compiler::scan;
@@ -52,9 +51,6 @@ struct Cli {
     #[arg(long)]
     force: bool,
 
-    /// 多文档策展模式标题
-    #[arg(long)]
-    book: Option<String>,
 }
 
 #[derive(Subcommand)]
@@ -254,58 +250,11 @@ async fn run() -> anyhow::Result<()> {
         provider_label,
         client.model
     );
-    if let Some(ref book_title) = cli.book {
-        println!("  {} 模式: 多文档策展「{}」", "✦".cyan(), book_title);
-    }
     println!();
 
     let pipeline = Pipeline::new(client);
 
-    if let Some(book_title) = cli.book {
-        // 多文档策展
-        let path = Path::new(&file);
-        let md_files: Vec<_> = if path.is_dir() {
-            walkdir::WalkDir::new(path)
-                .into_iter()
-                .filter_map(|e| e.ok())
-                .filter(|e| e.path().extension().map(|ext| ext == "md").unwrap_or(false))
-                .map(|e| e.path().to_path_buf())
-                .collect()
-        } else {
-            vec![path.to_path_buf()]
-        };
-
-        if md_files.is_empty() {
-            return Err(anyhow::anyhow!("未找到 Markdown 文件: {}", file));
-        }
-
-        println!("多文档策展模式: 发现 {} 篇文档", md_files.len());
-        let mut documents = Vec::new();
-        for f in md_files {
-            let path_str = f.to_string_lossy();
-            let content = convert_to_markdown_async(&path_str).await?;
-            let title = guess_title(&content, &path_str);
-            println!(
-                "  {} {} ({} 字符)",
-                "✓".green(),
-                f.file_name()
-                    .map(|n| n.to_string_lossy().to_string())
-                    .unwrap_or_else(|| "未知文件".to_string()),
-                content.len()
-            );
-            documents.push(Document {
-                title,
-                content,
-                source_file: f.to_string_lossy().to_string(),
-            });
-        }
-
-        let output_path = pipeline
-            .compile_book(documents, &book_title, &cli.output)
-            .await?;
-        println!("\n结果已保存到: {}", output_path);
-    } else {
-        // 单篇编译
+    // 单篇编译
         let path = Path::new(&file);
         let is_pdf = path
             .extension()
@@ -412,8 +361,8 @@ async fn run() -> anyhow::Result<()> {
             tokio::fs::copy(&file, &dest).await.ok();
         }
 
-        if !result.chunks.is_empty() && result.chunks.len() > 1 {
-            let output_path = cardnote_compiler::output::save_book(
+        let output_path = if !result.chunks.is_empty() && result.chunks.len() > 1 {
+            cardnote_compiler::output::save_book(
                 &result.summary,
                 &result.cards,
                 &result.graph.entities,
@@ -421,13 +370,25 @@ async fn run() -> anyhow::Result<()> {
                 &cli.output,
                 &book_title,
             )
-            .await?;
-            println!("\n结果已保存到: {}", output_path);
+            .await?
         } else {
-            let output_path = cardnote_compiler::output::save_single(&result, &cli.output).await?;
-            println!("\n结果已保存到: {}", output_path);
+            cardnote_compiler::output::save_single(&result, &cli.output).await?
+        };
+        println!("\n结果已保存到: {}", output_path);
+
+        // [v0.1.15] 将输入质量报告移动到最终输出目录，确保一个PDF只输出一个文件夹
+        let src_report = std::path::Path::new(&report_dir).join("input_quality_report.md");
+        let dest_report = std::path::Path::new(&output_path).join("input_quality_report.md");
+        if src_report.exists() {
+            if let Err(e) = tokio::fs::copy(&src_report, &dest_report).await {
+                eprintln!("  ⚠ 质量报告复制失败: {}", e);
+            } else {
+                // 复制成功后删除临时目录
+                if let Err(e) = tokio::fs::remove_dir_all(&report_dir).await {
+                    eprintln!("  ⚠ 临时报告目录删除失败: {}", e);
+                }
+            }
         }
-    }
 
     Ok(())
 }

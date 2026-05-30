@@ -729,6 +729,80 @@ impl ProviderRegistry {
                 },
             ],
         });
+
+        // LPGPT 聚合平台
+        self.register(Provider {
+            id: "lpgpt".to_string(),
+            name: "LPGPT".to_string(),
+            aliases: vec!["lp".to_string()],
+            default_base_url: "https://lpgpt.us".to_string(),
+            api_key_env_var: "LPGPT_API_KEY".to_string(),
+            api_key_pattern: "sk-".to_string(),
+            requires_api_key: true,
+            protocol: ProviderProtocol::OpenAiCompatible,
+            config_file_paths: vec![
+                "~/.config/cardnote-compiler/providers.json".to_string(),
+                ".cardnote/providers.json".to_string(),
+            ],
+            description: "LPGPT 聚合模型平台".to_string(),
+            models: vec![
+                ModelInfo {
+                    id: "gpt-5.5".to_string(),
+                    name: "GPT 5.5".to_string(),
+                    context_length: 1_050_000,
+                    max_output_tokens: 128_000,
+                    supports_json_mode: true,
+                    supports_vision: true,
+                    description: "OpenAI GPT-5.5 via LPGPT".to_string(),
+                },
+            ],
+        });
+
+        // Elysiver 聚合平台
+        self.register(Provider {
+            id: "elysiver".to_string(),
+            name: "Elysiver".to_string(),
+            aliases: vec!["ely".to_string()],
+            default_base_url: "https://elysiver.h-e.top".to_string(),
+            api_key_env_var: "ELYSIVER_API_KEY".to_string(),
+            api_key_pattern: "sk-".to_string(),
+            requires_api_key: true,
+            protocol: ProviderProtocol::OpenAiCompatible,
+            config_file_paths: vec![
+                "~/.config/cardnote-compiler/providers.json".to_string(),
+                ".cardnote/providers.json".to_string(),
+            ],
+            description: "Elysiver 聚合模型平台".to_string(),
+            models: vec![
+                ModelInfo {
+                    id: "glm-5.1-2cc".to_string(),
+                    name: "GLM-5.1-2CC".to_string(),
+                    context_length: 128_000,
+                    max_output_tokens: 8192,
+                    supports_json_mode: true,
+                    supports_vision: true,
+                    description: "智谱 GLM-5.1 via Elysiver".to_string(),
+                },
+                ModelInfo {
+                    id: "deepseek-v4-pro-2cc".to_string(),
+                    name: "DeepSeek V4 Pro-2CC".to_string(),
+                    context_length: 128_000,
+                    max_output_tokens: 8192,
+                    supports_json_mode: true,
+                    supports_vision: false,
+                    description: "DeepSeek V4 Pro via Elysiver".to_string(),
+                },
+                ModelInfo {
+                    id: "qwen3.6-plus-thinking".to_string(),
+                    name: "Qwen 3.6 Plus Thinking".to_string(),
+                    context_length: 1_000_000,
+                    max_output_tokens: 65_536,
+                    supports_json_mode: true,
+                    supports_vision: false,
+                    description: "通义千问 3.6 Plus Thinking via Elysiver".to_string(),
+                },
+            ],
+        });
     }
 }
 

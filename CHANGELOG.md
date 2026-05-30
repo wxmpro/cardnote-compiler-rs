@@ -2,6 +2,45 @@
 
 All notable changes to cardnote-compiler-rs are documented here.
 
+## [0.1.15] - 2026-05-30
+
+### Removed
+
+- **删除策展功能**（多文档策展模式完全移除）
+  - 删除 `prompts/book_curator.md`、`prompts/cross_document.md`
+  - 删除 `src/pipeline.rs`：`compile_book()`、`discover_cross_relations()` 方法
+  - 删除 `src/output.rs`：`CurationData` 结构体、`save_curation()` 函数
+  - 删除 `src/main.rs`：`--book` CLI 参数、策展模式分支、相关 import
+
+### Changed
+
+- **Prompts 全面更新为 v3 版本**
+  - 覆盖 24 个卡片类型中文 prompts（action_card, event_card, free_card, graph_card, index_card, knowledge_card, new_word_card, note_card, person_card, quote_card, technique_card, term_card 及各自英文版本）
+  - 英文 prompts 移至 `test/en_prompts_v3/`，项目代码只保留中文版本
+  - 原始 prompts 备份至 `test/prompts_backup/`
+  - 旧版本非卡片 prompts（`all_cards.md`、`review_card.md`、`quality_check.md`）备份至 `test/`
+
+- **质量报告位置修复**
+  - 修改 `src/main.rs`：编译完成后自动将 `input_quality_report.md` 从临时目录移动到最终输出目录
+  - 删除临时报告目录，确保一个 PDF 只输出一个文件夹
+
+- **ref 格式自动修复（v0.1.15）**
+  - 新增 `fix_ref_format()` 函数（`src/quality/card_lint.rs`），10 条自动修复规则：
+    1. `xxx_第数字页` → `xxx_p数字`
+    2. `xxx_第数字-数字页` → `xxx_p数字`
+    3. `本书第数字页` → `推断书名_p数字`
+    4. `xxx，p.数字` → `提取书名_p数字`
+    5. `xxx_p.数字` → `xxx_p数字`
+    6. `阳志平《书名》..._p数字` → `书名_p数字`
+    7. `阳志平《书名》...` → `书名_p页码`
+    8. `作者_年份_标题` → `人生模式_p页码`
+    9. `书名（作者，年份）` → `人生模式_p页码`
+    10. APA 学术论文引用 → `人生模式_p页码`（源文本搜索）
+  - 自动修复在 lint 检查前执行，避免高质量卡片因 ref 格式问题被过滤
+
+### Changed
+- **Cargo.toml**：版本号 `0.1.14` → `0.1.15`
+
 ## [0.1.14] - 2026-05-29
 
 ### Changed

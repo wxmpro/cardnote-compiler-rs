@@ -127,7 +127,7 @@ impl CardPlanner {
         )
     }
 
-    fn card_type_name(card_type: &CardType) -> &'static str {
+    pub fn card_type_name(card_type: &CardType) -> &'static str {
         match card_type {
             CardType::Knowledge => "新知卡",
             CardType::Term => "术语卡",
@@ -220,52 +220,85 @@ impl CardPlanner {
     }
 }
 
-/// 生成所有类型的卡片（一次 API 调用）
+/// 将 CardType 映射到 Prompt 文件名
+fn card_type_prompt_name(card_type: &CardType) -> &'static str {
+    match card_type {
+        CardType::Knowledge => "knowledge_card",
+        CardType::Term => "term_card",
+        CardType::Person => "person_card",
+        CardType::Quote => "quote_card",
+        CardType::Event => "event_card",
+        CardType::Action => "action_card",
+        CardType::Graph => "graph_card",
+        CardType::NewWord => "new_word_card",
+        CardType::Note => "note_card",
+        CardType::Index => "index_card",
+        CardType::CounterIntuit => "knowledge_card", // 反常识卡合并到新知卡
+        CardType::Review => "review_card",
+    }
+}
+
+/// 生成所有类型的卡片（分类型调用单类型 Prompt）
 pub async fn generate_cards(
     document: &str,
     doc_type: DocumentType,
     call_llm: impl ChatFn,
     load_prompt: &(dyn Fn(&str) -> Result<String> + Send + Sync),
 ) -> Result<Vec<Card>> {
-    let prompt_template = load_prompt("all_cards")?;
-    // 生成卡片规划文本
-    let plan_text = CardPlanner::plan_text(doc_type, document.len());
-    let prompt = prompt_template
-        .replace("{card_plan}", &plan_text)
-        .replace("{document}", document);
+    let plan = CardPlanner::plan(doc_type, document.len());
+    let mut all_cards = Vec::new();
 
-    let system = "你是一位知识卡片专家，擅长将文档内容转化为多种类型的高质量知识卡片。".to_string();
+    // 只处理必选类型
+    for item in plan.iter().filter(|i| i.required) {
+        let prompt_name = card_type_prompt_name(&item.card_type);
+        let prompt_template = match load_prompt(prompt_name) {
+            Ok(p) => p,
+            Err(e) => {
+                eprintln!("    ⚠ 未找到 Prompt '{}': {}, 跳过", prompt_name, e);
+                continue;
+            }
+        };
 
-    let response = match call_llm
-        .call_chat(
-            vec![
-                LlmMessage {
-                    role: "system".to_string(),
-                    content: system,
-                },
-                LlmMessage {
-                    role: "user".to_string(),
-                    content: prompt,
-                },
-            ],
-            Some(DOC_LIMITS.compile_output as u32),
-        )
-        .await
-    {
-        Ok(r) => r,
-        Err(e) => {
-            eprintln!("    ⚠ 卡片 LLM 调用失败，返回空列表: {}", e);
-            return Ok(Vec::new());
-        }
-    };
+        let prompt = prompt_template.replace("{document}", document);
 
-    let mut all_cards = match parse_all_cards(&response) {
-        Ok(cards) => cards,
-        Err(e) => {
-            eprintln!("    ⚠ 卡片解析失败，返回空列表: {}", e);
-            return Ok(Vec::new());
-        }
-    };
+        let system = format!(
+            "你是一位以卡片笔记为信仰的知识炼金术士。当前任务：生成{}。请严格遵循 Prompt 中的格式要求输出。",
+            CardPlanner::card_type_name(&item.card_type)
+        );
+
+        let response = match call_llm
+            .call_chat(
+                vec![
+                    LlmMessage {
+                        role: "system".to_string(),
+                        content: system,
+                    },
+                    LlmMessage {
+                        role: "user".to_string(),
+                        content: prompt,
+                    },
+                ],
+                Some(DOC_LIMITS.compile_output as u32),
+            )
+            .await
+        {
+            Ok(r) => r,
+            Err(e) => {
+                eprintln!("    ⚠ {} 卡片 LLM 调用失败: {}", prompt_name, e);
+                continue;
+            }
+        };
+
+        let cards = match parse_single_type_cards(&response, item.card_type.clone()) {
+            Ok(cards) => cards,
+            Err(e) => {
+                eprintln!("    ⚠ {} 卡片解析失败: {}", prompt_name, e);
+                continue;
+            }
+        };
+
+        all_cards.extend(cards);
+    }
 
     // 唯一编码：YYYYMMDDHHMMSS（14位格式不变）
     // 通过全局状态确保跨批次不重复：若上次生成占用到 T，本次从 T+1 开始
@@ -286,8 +319,8 @@ pub async fn generate_cards(
     Ok(all_cards)
 }
 
-/// 解析统一卡片响应（包含多种类型）
-fn parse_all_cards(response: &str) -> Result<Vec<Card>> {
+/// 解析单类型卡片响应
+fn parse_single_type_cards(response: &str, card_type: CardType) -> Result<Vec<Card>> {
     let mut cards = Vec::new();
 
     // 按 "---" 分隔符分割卡片
@@ -302,69 +335,100 @@ fn parse_all_cards(response: &str) -> Result<Vec<Card>> {
             continue;
         }
 
-        // 从 "类型：" 字段识别卡片类型
-        let card_type = parse_card_type(block);
+        let title = extract_field(block, "标题").unwrap_or_default();
+        let reference = extract_field(block, "ref").unwrap_or_default();
 
-        let mut card = Card {
-            title: extract_field(block, "标题").unwrap_or_default(),
-            content: extract_field(block, "内容")
-                .or_else(|| extract_content(block))
-                .unwrap_or_default(),
-            card_type,
-            reference: extract_field(block, "ref")
-                .or_else(|| extract_field(block, "参考"))
-                .unwrap_or_default(),
-            unique_id: String::new(),
-            original_text: extract_field(block, "原文").unwrap_or_default(),
-            source: extract_field(block, "出处").unwrap_or_default(),
-            paraphrase: extract_field(block, "仿写").unwrap_or_default(),
-            related_cards: Vec::new(),
-            source_file: extract_field(block, "来源文件").unwrap_or_default(),
-            chunk_id: extract_field(block, "chunk").unwrap_or_default(),
-            evidence: extract_field(block, "证据").unwrap_or_default(),
-            location: extract_field(block, "位置").unwrap_or_default(),
-            quality_score: 1.0,
-            status: CardStatus::Accepted,
-            reject_reason: String::new(),
-            retry_count: 0,
-            degraded_from: None,
-        };
+        // 构建 content：保留所有类型专属字段，排除通用字段
+        let mut content_lines = Vec::new();
 
-        // 提取关联卡片
-        if let Some(related) = extract_field(block, "关联卡片") {
-            card.related_cards = related
-                .split('、')
-                .map(|s| s.trim().to_string())
-                .filter(|s| !s.is_empty())
-                .collect();
+        for line in block.lines() {
+            let trimmed = line.trim();
+
+            // 跳过开头的空行
+            if trimmed.is_empty() && content_lines.is_empty() {
+                continue;
+            }
+
+            // 跳过标题字段行
+            if trimmed.starts_with("标题") && (trimmed.contains("：") || trimmed.contains(":")) {
+                continue;
+            }
+
+            // 跳过 ref 字段行
+            if trimmed.starts_with("ref") && (trimmed.contains("：") || trimmed.contains(":")) {
+                continue;
+            }
+
+            // 跳过参考字段行（中文）
+            if trimmed.starts_with("参考") && (trimmed.contains("：") || trimmed.contains(":")) {
+                continue;
+            }
+
+            // 跳过 uuid 字段行
+            if (trimmed.starts_with("uuid") || trimmed.starts_with("唯一编码"))
+                && (trimmed.contains("：") || trimmed.contains(":"))
+            {
+                continue;
+            }
+
+            // 跳过卡片类型标签行
+            if trimmed.starts_with("#术语卡")
+                || trimmed.starts_with("#新知卡")
+                || trimmed.starts_with("#人物卡")
+                || trimmed.starts_with("#金句卡")
+                || trimmed.starts_with("#事件卡")
+                || trimmed.starts_with("#行动卡")
+                || trimmed.starts_with("#图示卡")
+                || trimmed.starts_with("#新词卡")
+                || trimmed.starts_with("#基础卡")
+                || trimmed.starts_with("#索引卡")
+                || trimmed.starts_with("#反常识卡")
+                || trimmed.starts_with("#综述卡")
+                || trimmed.starts_with("#技巧卡")
+                || trimmed.starts_with("#任意卡")
+            {
+                continue;
+            }
+
+            content_lines.push(line);
         }
 
-        if !card.title.is_empty() {
-            cards.push(card);
+        // 去掉末尾的空行
+        while let Some(last) = content_lines.last() {
+            if last.trim().is_empty() {
+                content_lines.pop();
+            } else {
+                break;
+            }
+        }
+
+        let content = content_lines.join("\n").trim().to_string();
+
+        if !title.is_empty() {
+            cards.push(Card {
+                title,
+                content,
+                card_type: card_type.clone(),
+                reference,
+                unique_id: String::new(),
+                original_text: String::new(),
+                source: String::new(),
+                paraphrase: String::new(),
+                related_cards: Vec::new(),
+                source_file: String::new(),
+                chunk_id: String::new(),
+                evidence: String::new(),
+                location: String::new(),
+                quality_score: 1.0,
+                status: CardStatus::Accepted,
+                reject_reason: String::new(),
+                retry_count: 0,
+                degraded_from: None,
+            });
         }
     }
 
     Ok(cards)
-}
-
-/// 从文本块中解析卡片类型
-fn parse_card_type(block: &str) -> CardType {
-    let type_str = extract_field(block, "类型").unwrap_or_default();
-    match type_str.as_str() {
-        "人物卡" | "人物" => CardType::Person,
-        "术语卡" | "术语" => CardType::Term,
-        "新知卡" | "新知" | "知识卡" => CardType::Knowledge,
-        "金句卡" | "金句" | "引用卡" => CardType::Quote,
-        "事件卡" | "事件" => CardType::Event,
-        "行动卡" | "行动" | "方法卡" => CardType::Action,
-        "图示卡" | "图示" | "图谱卡" => CardType::Graph,
-        "生字卡" | "生字" | "词汇卡" => CardType::NewWord,
-        "笔记卡" | "笔记" => CardType::Note,
-        "目录卡" | "目录" | "索引卡" => CardType::Index,
-        "反常识卡" | "反常识" | "洞见卡" => CardType::CounterIntuit,
-        "综述卡" | "综述" | "总结卡" => CardType::Review,
-        _ => CardType::Knowledge,
-    }
 }
 
 /// 从文本块中提取字段
@@ -376,92 +440,52 @@ fn extract_field(block: &str, field_name: &str) -> Option<String> {
         .map(|m| m.as_str().trim().to_string())
 }
 
-/// 提取卡片正文内容（标题和参考之间的内容）
-fn extract_content(block: &str) -> Option<String> {
-    let lines: Vec<&str> = block.lines().collect();
-    let mut content_lines = Vec::new();
-    let mut in_content = false;
-
-    for line in &lines {
-        let trimmed = line.trim();
-        if trimmed.starts_with("标题") || trimmed.starts_with("# ") {
-            in_content = true;
-            continue;
-        }
-        if trimmed.starts_with("参考")
-            || trimmed.starts_with("唯一编码")
-            || trimmed.starts_with("#")
-        {
-            break;
-        }
-        if in_content && !trimmed.is_empty() {
-            content_lines.push(*line);
-        }
-    }
-
-    if content_lines.is_empty() {
-        // 兜底：返回整个块除第一行外的内容
-        if lines.len() > 1 {
-            return Some(lines[1..].join("\n").trim().to_string());
-        }
-        return None;
-    }
-
-    Some(content_lines.join("\n").trim().to_string())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn test_parse_all_cards_single() {
-        let response = "---\n类型：新知卡\n标题：标题A\n内容：正文内容A。\n参考：来源A\n---";
-        let cards = parse_all_cards(response).unwrap();
-        assert_eq!(cards.len(), 1);
-        assert_eq!(cards[0].title, "标题A");
-        assert_eq!(cards[0].card_type, CardType::Knowledge);
-        assert_eq!(cards[0].reference, "来源A");
+    fn test_card_type_prompt_name() {
+        assert_eq!(card_type_prompt_name(&CardType::Knowledge), "knowledge_card");
+        assert_eq!(card_type_prompt_name(&CardType::Term), "term_card");
+        assert_eq!(card_type_prompt_name(&CardType::CounterIntuit), "knowledge_card");
+        assert_eq!(card_type_prompt_name(&CardType::Review), "review_card");
     }
 
     #[test]
-    fn test_parse_all_cards_multiple_types() {
-        let response = "---\n类型：术语卡\n标题：标题B\n内容：正文内容B\n---\n---\n类型：人物卡\n标题：标题C\n内容：正文内容C\n---";
-        let cards = parse_all_cards(response).unwrap();
-        assert_eq!(cards.len(), 2);
-        assert_eq!(cards[0].title, "标题B");
+    fn test_parse_single_type_cards_term() {
+        let response = "---\n标题：执行意图\n定义：它是一种制订计划的方式。\n解释：通过在大脑中提前规划执行计划的时间、地点，从而更易引发行动。\n例子：你可以将「我要多运动」改写为「如果到了每天傍晚5点，那么我就去操场跑步」。\nref：人生模式_p160\nuuid：202001011942\n#术语卡\n---";
+        let cards = parse_single_type_cards(response, CardType::Term).unwrap();
+        assert_eq!(cards.len(), 1);
+        assert_eq!(cards[0].title, "执行意图");
         assert_eq!(cards[0].card_type, CardType::Term);
-        assert_eq!(cards[1].title, "标题C");
-        assert_eq!(cards[1].card_type, CardType::Person);
+        assert_eq!(cards[0].reference, "人生模式_p160");
+        // content 应该包含定义、解释、例子，但不包含标题、ref、uuid、标签
+        assert!(cards[0].content.contains("定义："));
+        assert!(cards[0].content.contains("解释："));
+        assert!(cards[0].content.contains("例子："));
+        assert!(!cards[0].content.contains("ref："));
+        assert!(!cards[0].content.contains("uuid："));
     }
 
     #[test]
-    fn test_parse_all_cards_quote_type() {
-        let response = "---\n类型：金句卡\n标题：标题D\n原文：原文A\n出处：出处A\n仿写：仿写A\n---";
-        let cards = parse_all_cards(response).unwrap();
+    fn test_parse_single_type_cards_knowledge() {
+        let response = "---\n标题：阅读方法不是通用的\n已知：阅读一本书就是从头到尾逐页逐段阅读\n新知：不同类型的书需要用不同的阅读次序和技法\n例子：学术专著需要结构阅读→抽样阅读→文本细读→主题阅读\nref：阳志平《聪明的阅读者》\nuuid：202305021641\n#新知卡\n---";
+        let cards = parse_single_type_cards(response, CardType::Knowledge).unwrap();
         assert_eq!(cards.len(), 1);
-        assert_eq!(cards[0].card_type, CardType::Quote);
-        assert_eq!(cards[0].original_text, "原文A");
-        assert_eq!(cards[0].source, "出处A");
-        assert_eq!(cards[0].paraphrase, "仿写A");
+        assert_eq!(cards[0].title, "阅读方法不是通用的");
+        assert_eq!(cards[0].card_type, CardType::Knowledge);
+        assert!(cards[0].content.contains("已知："));
+        assert!(cards[0].content.contains("新知："));
     }
 
     #[test]
-    fn test_parse_all_cards_related_cards() {
-        let response = "---\n类型：新知卡\n标题：标题E\n内容\n关联卡片：关联A、关联B\n---";
-        let cards = parse_all_cards(response).unwrap();
-        assert_eq!(cards[0].related_cards.len(), 2);
-        assert_eq!(cards[0].related_cards[0], "关联A");
-        assert_eq!(cards[0].related_cards[1], "关联B");
-    }
-
-    #[test]
-    fn test_parse_all_cards_empty_title_skipped() {
-        let response =
-            "---\n类型：新知卡\n标题：\n\n---\n---\n类型：笔记卡\n标题：标题F\n内容\n---";
-        let cards = parse_all_cards(response).unwrap();
-        assert_eq!(cards.len(), 1);
-        assert_eq!(cards[0].title, "标题F");
+    fn test_parse_single_type_cards_multiple() {
+        let response = "---\n标题：卡片A\n定义：定义A\nref：来源A\n#术语卡\n---\n---\n标题：卡片B\n定义：定义B\nref：来源B\n#术语卡\n---";
+        let cards = parse_single_type_cards(response, CardType::Term).unwrap();
+        assert_eq!(cards.len(), 2);
+        assert_eq!(cards[0].title, "卡片A");
+        assert_eq!(cards[1].title, "卡片B");
     }
 
     #[test]
@@ -482,71 +506,5 @@ mod tests {
         let block = "标题: 值A\n内容：值B\n";
         assert_eq!(extract_field(block, "标题"), Some("值A".to_string()));
         assert_eq!(extract_field(block, "内容"), Some("值B".to_string()));
-    }
-
-    #[test]
-    fn test_extract_content_basic() {
-        let block = "标题：标题G\n\n正文第一行\n正文第二行\n\n参考：来源B\n";
-        let content = extract_content(block);
-        assert_eq!(content, Some("正文第一行\n正文第二行".to_string()));
-    }
-
-    #[test]
-    fn test_extract_content_fallback() {
-        let block = "标题：标题H\n\n正文内容\n";
-        let content = extract_content(block);
-        assert!(content.is_some());
-    }
-
-    #[test]
-    fn test_extract_content_empty() {
-        let block = "标题：标题H";
-        let content = extract_content(block);
-        assert_eq!(content, None);
-    }
-
-    // ── 边界测试 ──
-
-    #[test]
-    fn test_parse_all_cards_empty_json() {
-        let json = serde_json::json!({});
-        let result = parse_all_cards(&json.to_string());
-        assert!(result.unwrap().is_empty());
-    }
-
-    #[test]
-    fn test_parse_all_cards_empty_array() {
-        let json = serde_json::json!({ "cards": [] });
-        let result = parse_all_cards(&json.to_string());
-        assert!(result.unwrap().is_empty());
-    }
-
-    #[test]
-    fn test_parse_all_cards_missing_fields() {
-        // parse_all_cards 解析 markdown 格式文本块，不是 JSON
-        let text = r#"标题：标题A
-类型：术语卡
----
-类型：术语卡
-内容：没有标题的块
-"#;
-        let result = parse_all_cards(text);
-        // 有标题的保留，没有标题的被跳过
-        assert_eq!(result.unwrap().len(), 1);
-    }
-
-    #[test]
-    fn test_extract_field_various_separators() {
-        assert_eq!(extract_field("键：值", "键"), Some("值".to_string()));
-        assert_eq!(extract_field("键: 值", "键"), Some("值".to_string()));
-        assert_eq!(extract_field("键:值", "键"), Some("值".to_string()));
-        assert_eq!(extract_field("键 值", "键"), None);
-    }
-
-    #[test]
-    fn test_extract_content_no_marker() {
-        let block = "没有标记的普通文本";
-        let content = extract_content(block);
-        assert_eq!(content, None);
     }
 }

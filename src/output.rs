@@ -249,72 +249,6 @@ pub async fn save_book(
     Ok(dir.to_string_lossy().to_string())
 }
 
-/// 策展数据集合
-pub struct CurationData<'a> {
-    pub global_summary: &'a Summary,
-    pub cards: &'a [Card],
-    pub entities: &'a [Entity],
-    pub relations: &'a [Relation],
-    pub cross_relations: &'a [Relation],
-    pub doc_results: &'a [CompilationResult],
-}
-
-/// 保存策展结果(多文档)
-pub async fn save_curation(
-    data: &CurationData<'_>,
-    output_dir: &str,
-    book_title: &str,
-) -> Result<String> {
-    let dir = create_output_dir(output_dir, Some(book_title)).await?;
-
-    // 保存全局摘要
-    let summary_path = dir.join("summary.md");
-    fs::write(&summary_path, data.global_summary.to_markdown()).await?;
-    apply_42md_lint(&summary_path).await.ok();
-
-    // 保存卡片
-    let cards_dir = dir.join("cards");
-    fs::create_dir_all(&cards_dir).await?;
-    save_cards_by_type(&cards_dir, data.cards).await?;
-
-    // 保存所有卡片
-    let all_cards_path = dir.join("all_cards.md");
-    let all_cards_content: Vec<String> = data.cards.iter().map(|c| c.to_markdown()).collect();
-    fs::write(&all_cards_path, all_cards_content.join("\n")).await?;
-
-    let quality_path = dir.join("card_quality_report.md");
-    fs::write(&quality_path, cards_quality_report(data.cards)).await?;
-
-    // 保存实体
-    let entities_path = dir.join("entities.md");
-    fs::write(&entities_path, entities_to_markdown(data.entities)).await?;
-
-    // 保存关系图谱
-    let graph_path = dir.join("graph.mmd");
-    let graph = crate::models::KnowledgeGraph {
-        entities: data.entities.to_vec(),
-        relations: data.relations.to_vec(),
-    };
-    fs::write(&graph_path, graph.to_mermaid()).await?;
-
-    // 保存跨文档关系
-    if !data.cross_relations.is_empty() {
-        let cross_path = dir.join("cross_relations.md");
-        fs::write(&cross_path, relations_to_markdown(data.cross_relations)).await?;
-    }
-
-    // 保存各文档子结果
-    let docs_dir = dir.join("documents");
-    fs::create_dir_all(&docs_dir).await?;
-    for (i, result) in data.doc_results.iter().enumerate() {
-        let doc_dir = docs_dir.join(format!("doc_{:03}", i + 1));
-        if let Err(e) = save_single_to_dir(result, &doc_dir).await {
-            eprintln!("    警告: 子文档 {} 保存失败: {}", i + 1, e);
-        }
-    }
-
-    Ok(dir.to_string_lossy().to_string())
-}
 
 /// 保存单篇编译结果到指定目录（不创建新的带时间戳的目录）
 /// 保存单篇编译结果到指定目录
@@ -558,25 +492,6 @@ fn entities_to_markdown(entities: &[Entity]) -> String {
                 "".to_string()
             } else {
                 format!(" — {}", entity.context)
-            }
-        ));
-    }
-    lines.join("\n")
-}
-
-/// 关系列表转 Markdown
-fn relations_to_markdown(relations: &[Relation]) -> String {
-    let mut lines = vec!["# 关系列表\n".to_string()];
-    for rel in relations {
-        lines.push(format!(
-            "- **{}** — [{}] → **{}**{}",
-            rel.source,
-            rel.relation_type,
-            rel.target,
-            if rel.evidence.is_empty() {
-                "".to_string()
-            } else {
-                format!(" (证据: {})", rel.evidence)
             }
         ));
     }

@@ -10,10 +10,9 @@ use crate::config::{CHUNK_SIZE, MAX_WORKERS};
 use crate::doc_type::{DocTypeDetector, DocumentType};
 use crate::error::{AppError, Result};
 use crate::models::{
-    Card, ChunkInfo, CompilationDiagnostics, CompilationResult, Document, Entity, KnowledgeGraph,
+    Card, ChunkInfo, CompilationDiagnostics, CompilationResult, Entity, KnowledgeGraph,
     LlmMessage, Relation, StageFail, Summary,
 };
-use crate::output;
 use crate::stages::cards::{CardPlanner, generate_cards};
 use crate::stages::common::{ChatFn, ChatJsonFn};
 use crate::stages::entities::{extract_entities, unify_entities};
@@ -284,94 +283,6 @@ impl Pipeline {
     }
 
     /// 多文档策展编译
-    pub async fn compile_book(
-        &self,
-        documents: Vec<Document>,
-        book_title: &str,
-        output_dir: &str,
-    ) -> Result<String> {
-        println!("{}", "=".repeat(60));
-        println!("多文档知识编译启动");
-        println!("{}", "=".repeat(60));
-
-        let mut all_results = Vec::new();
-        let mut all_cards = Vec::new();
-        let mut all_entities = Vec::new();
-        let mut all_relations = Vec::new();
-
-        for (i, doc) in documents.iter().enumerate() {
-            println!("\n[文档 {}/{}] {}", i + 1, documents.len(), doc.title);
-            let result = self.run(&doc.content, &doc.source_file).await?;
-            let entity_count = result.graph.entities.len();
-            let card_count = result.cards.len();
-            println!("  ✓ 实体 {} 个 | 卡片 {} 张", entity_count, card_count);
-            all_results.push(result.clone());
-            all_cards.extend(result.cards);
-            all_entities.extend(result.graph.entities);
-            all_relations.extend(result.graph.relations);
-        }
-
-        // 质量过滤：移除空卡片/低质量卡片
-        let joined_document = documents
-            .iter()
-            .map(|doc| doc.content.as_str())
-            .collect::<Vec<_>>()
-            .join("\n\n");
-        let (filtered_cards, _lint_stats) = crate::quality::filter_cards_with_source(
-            &all_cards,
-            &joined_document,
-            &crate::quality::CardLintConfig::default(),
-        );
-
-        let (unique_entities, entity_stats, entity_name_map) = unify_entities(&all_entities);
-        if entity_stats.merged_groups > 0 {
-            eprintln!(
-                "  ✓ 实体统一: {} 个实体 → {} 个 (合并 {} 组, 消除 {} 个重复)",
-                entity_stats.original_count,
-                entity_stats.unified_count,
-                entity_stats.merged_groups,
-                entity_stats.eliminated_duplicates
-            );
-        }
-        let unique_cards = dedup_cards(&filtered_cards);
-        let updated_relations = update_relation_endpoints(&all_relations, &entity_name_map);
-        let unique_relations = merge_relations(&updated_relations);
-
-        let cross_relations = self
-            .discover_cross_relations(&unique_entities, &documents, &entity_name_map)
-            .await?;
-
-        let global_summary = Self::merge_doc_summaries(
-            &all_results
-                .iter()
-                .map(|r| r.summary.clone())
-                .collect::<Vec<_>>(),
-        );
-
-        println!(
-            "\n  总计: 实体 {} 个 | 卡片 {} 张 | 关系 {} 条",
-            unique_entities.len(),
-            unique_cards.len(),
-            unique_relations.len()
-        );
-        println!("  跨文档关系: {} 条", cross_relations.len());
-
-        let curation_data = output::CurationData {
-            global_summary: &global_summary,
-            cards: &unique_cards,
-            entities: &unique_entities,
-            relations: &unique_relations,
-            cross_relations: &cross_relations,
-            doc_results: &all_results,
-        };
-        let output_path = output::save_curation(&curation_data, output_dir, book_title).await?;
-
-        println!("\n结果已保存到: {}", output_path);
-        Ok(output_path)
-    }
-
-    // ── 单轮编译 ──
-
     async fn run_single(
         &self,
         document: &str,
@@ -834,112 +745,8 @@ impl Pipeline {
                 .join("\n"),
         }
     }
-
-    async fn discover_cross_relations(
-        &self,
-        entities: &[Entity],
-        documents: &[Document],
-        entity_name_map: &std::collections::HashMap<String, String>,
-    ) -> Result<Vec<Relation>> {
-        if documents.len() < 2 || entities.len() < 2 {
-            return Ok(Vec::new());
-        }
-
-        // 构建反向名称映射：统一名称 → 所有原始名称（含自身）
-        // 用于在文档内容中搜索时匹配所有名称变体
-        let mut name_aliases: std::collections::HashMap<String, std::collections::HashSet<String>> =
-            std::collections::HashMap::new();
-        for (original, unified) in entity_name_map {
-            name_aliases
-                .entry(unified.clone())
-                .or_default()
-                .insert(original.clone());
-            name_aliases
-                .entry(unified.clone())
-                .or_default()
-                .insert(unified.clone());
-        }
-        // 未在映射中出现的实体（本身已是统一名称）也加入别名集合
-        for e in entities {
-            name_aliases
-                .entry(e.name.clone())
-                .or_default()
-                .insert(e.name.clone());
-        }
-
-        let prompt = self.ctx.load_prompt("cross_document")?;
-
-        let doc_texts: Vec<String> = documents
-            .iter()
-            .map(|d| {
-                let text: String = d.content.chars().take(2000).collect();
-                let doc_entities: Vec<String> = entities
-                    .iter()
-                    .filter(|e| {
-                        // 使用别名集合匹配：统一名称或其任何原始变体
-                        let aliases = name_aliases.get(&e.name).cloned().unwrap_or_default();
-                        aliases.iter().any(|alias| text.contains(alias))
-                    })
-                    .map(|e| e.name.clone())
-                    .take(10)
-                    .collect();
-                format!("文档《{}》：涉及实体 {}", d.title, doc_entities.join("、"))
-            })
-            .collect();
-
-        let entities_text: Vec<String> = entities
-            .iter()
-            .take(20)
-            .map(|e| format!("- {} ({})", e.name, e.entity_type))
-            .collect();
-
-        let user = prompt
-            .replace("{documents}", &doc_texts.join("\n\n"))
-            .replace("{entities}", &entities_text.join("\n"));
-
-        let response = self
-            .ctx
-            .call_llm(
-                vec![
-                    LlmMessage {
-                        role: "system".to_string(),
-                        content: "你是一位知识策展人，擅长发现不同文档之间的隐性关联。".to_string(),
-                    },
-                    LlmMessage {
-                        role: "user".to_string(),
-                        content: user,
-                    },
-                ],
-                Some(8000),
-            )
-            .await?;
-
-        // 解析 |source|relation|target|evidence| 格式
-        let mut relations = Vec::new();
-        for line in response.lines() {
-            let line = line.trim();
-            if line.is_empty() || line.starts_with('#') {
-                continue;
-            }
-            let parts: Vec<&str> = line.splitn(4, '|').collect();
-            if parts.len() >= 3 {
-                relations.push(Relation {
-                    source: parts[0].trim().to_string(),
-                    relation_type: parts[1].trim().to_string(),
-                    target: parts[2].trim().to_string(),
-                    evidence: parts
-                        .get(3)
-                        .map(|s| s.trim().to_string())
-                        .unwrap_or_default(),
-                });
-            }
-        }
-
-        Ok(relations)
-    }
 }
 
-/// 编译单个语义块（独立函数，可被并行调用）
 async fn compile_chunk(
     ctx: CompileContext,
     document: String,
