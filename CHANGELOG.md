@@ -41,7 +41,19 @@ All notable changes to cardnote-compiler-rs are documented here.
 ### Changed
 - **Cargo.toml**：版本号 `0.1.14` → `0.1.15`
 
-## [0.1.14] - 2026-05-29
+## [0.1.16] - 2026-05-30
+
+### Changed
+
+- **重写 4 个核心 prompts 为 v3 风格**
+  - `entity_extraction.md`：增加 7 种实体类型定义、统一表述规则、拒绝标准、类型区分规则（72 行）
+  - `quality_check.md`：增加检查维度表格、严重程度定义、一票否决拒绝标准（118 行）
+  - `relation_graph.md`：增加 12 种关系类型表格、发现规则、关系合并规则（72 行）
+  - `summary.md`：增加概述写作标准、核心要点选取标准、关键实体提取标准（72 行）
+
+- **Cargo.toml**：版本号 `0.1.15` → `0.1.16`
+
+## [0.1.15] - 2026-05-30
 
 ### Changed
 
