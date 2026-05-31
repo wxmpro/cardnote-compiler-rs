@@ -6,6 +6,7 @@ use colored::*;
 
 use cardnote_compiler::api::create_client;
 use cardnote_compiler::config::{find_env_file, get_api_config, get_provider_label};
+use cardnote_compiler::health::{check_all_providers, print_health_report, select_best};
 use cardnote_compiler::error::AppError;
 use cardnote_compiler::converter::{
     convert_to_markdown_async, convert_to_markdown_async_with_timeout,
@@ -219,8 +220,34 @@ async fn handle_compile(cli: Cli) -> cardnote_compiler::error::Result<()> {
         .file
         .ok_or_else(|| AppError::Config("请指定输入文件，或运行 cardc init / cardc doctor".to_string()))?;
 
-    let (api_key, provider) = get_api_config(cli.api_key, cli.provider).await?;
-    let client = create_client(&provider, &api_key, cli.model, cli.base_url)?;
+    // ── 自动 Provider 健康检测与选择 ──
+    let (api_key, provider, model) = if cli.api_key.is_none() && cli.provider.is_none() {
+        println!("{} 正在检测所有 Provider 连通性...", "🔍".bright_yellow());
+        let health_results = check_all_providers().await;
+        print_health_report(&health_results);
+
+        if let Some((best_provider_id, best_model, best_label)) = select_best(&health_results) {
+            println!(
+                "\n{} 自动选择最佳 Provider: {} ({})",
+                "✓".green(),
+                best_label.bright_cyan(),
+                format!("{}ms", health_results[0].latency_ms).bright_black()
+            );
+            let credentials = cardnote_compiler::providers::scan_credentials();
+            let cred = credentials.get(&best_provider_id)
+                .ok_or_else(|| AppError::Config(format!("最佳 Provider {} 凭据丢失", best_provider_id)))?;
+            (cred.api_key.clone(), best_provider_id, Some(best_model))
+        } else {
+            println!("\n{} 没有可用的 Provider，启动交互式配置...", "⚠".yellow());
+            let (key, prov, model, _) = cardnote_compiler::config::interactive_setup().await?;
+            (key, prov, model)
+        }
+    } else {
+        let (key, prov) = get_api_config(cli.api_key, cli.provider).await?;
+        (key, prov, cli.model)
+    };
+
+    let client = create_client(&provider, &api_key, model, cli.base_url)?;
 
     let provider_label = get_provider_label(&provider);
     let file_display = if file.chars().count() < 60 {

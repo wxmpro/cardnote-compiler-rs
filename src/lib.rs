@@ -5,6 +5,7 @@ pub mod dedup;
 pub mod diagnostics;
 pub mod doc_type;
 pub mod error;
+pub mod health;
 pub mod models;
 pub mod output;
 pub mod pipeline;
