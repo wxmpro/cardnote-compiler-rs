@@ -245,7 +245,7 @@ pub async fn generate_cards(
     call_llm: impl ChatFn,
     load_prompt: &(dyn Fn(&str) -> Result<String> + Send + Sync),
 ) -> Result<Vec<Card>> {
-    let plan = CardPlanner::plan(doc_type, document.len());
+    let plan = CardPlanner::plan(doc_type, document.chars().count());
     let mut all_cards = Vec::new();
 
     // 处理所有规划类型（不再区分必选/可选）

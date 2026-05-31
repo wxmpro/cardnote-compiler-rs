@@ -347,6 +347,23 @@ async fn handle_compile(cli: Cli) -> cardnote_compiler::error::Result<()> {
 
     let result = pipeline.run(&document, &file).await?;
 
+    // [C3] 编译结果健康检查：如果所有阶段都返回空值，提示用户可能存在失败
+    if result.cards.is_empty()
+        && result.summary.title.is_empty()
+        && result.summary.overview.is_empty()
+    {
+        println!(
+            "\n{} 编译结果为空（摘要和卡片均为空）。",
+            "⚠".yellow()
+        );
+        if !result.diagnostics.failures.is_empty() {
+            println!("   检测到 {} 个阶段失败，请检查 compile_diagnostics.md 了解详情。", result.diagnostics.failures.len());
+        } else {
+            println!("   可能原因：LLM 输出全部为空，或卡片解析未匹配到任何有效内容。");
+        }
+        println!("   输出目录仍会创建，但文件内容可能为空。");
+    }
+
     let book_title = if is_pdf {
         let meta = extract_pdf_metadata(&file);
         if !meta.title.is_empty() {
@@ -401,7 +418,9 @@ async fn handle_compile(cli: Cli) -> cardnote_compiler::error::Result<()> {
                 std::fs::canonicalize(&cli.output),
             ) {
                 (Ok(r), Ok(o)) => r.starts_with(&o),
-                _ => !report_dir.contains(".."),
+                _ => !std::path::Path::new(&report_dir)
+                    .components()
+                    .any(|c| matches!(c, std::path::Component::ParentDir)),
             };
             if is_safe {
                 if let Err(e) = tokio::fs::remove_dir_all(&report_dir).await {

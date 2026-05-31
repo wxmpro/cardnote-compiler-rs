@@ -2,6 +2,29 @@
 
 All notable changes to cardnote-compiler-rs are documented here.
 
+## [0.1.22] - 2026-05-31
+
+### Fixed
+
+- **修复中文文档卡片规划数量偏少** (`stages/cards.rs`)
+  - 根因：`generate_cards()` 使用 `document.len()`（UTF-8 字节数）传给 `CardPlanner::plan()`，但 `CardPlanner` 以字符数判断阈值。中文文档字节数 ≈ 3× 字符数，导致接近阈值的中文文档被误判为小规模，卡片规划数量不足。
+  - 修复：`document.len()` → `document.chars().count()`。
+  - 影响：纯中文书籍（如《聪明的阅读者》）的卡片规划现在正确按字符数计算。
+
+- **增强编译失败的可见性** (`main.rs`)
+  - 根因：LLM 阶段失败时返回空值但不中断编译，用户看到"编译完成"但输出目录内是空文件。
+  - 修复：在 `pipeline.run()` 返回后增加编译结果健康检查。如果摘要和卡片均为空，打印明确警告并提示检查 `compile_diagnostics.md`。
+  - 行为：继续保存输出（让用户有诊断文件可看），但不再静默成功。
+
+- **强化临时目录删除的路径安全检查** (`main.rs`)
+  - 根因：`canonicalize` 失败时的回退逻辑只检查 `".."` 子串，可被 `"..."` 等形式绕过。
+  - 修复：回退逻辑改为使用 `Path::components()` 遍历检查 `ParentDir` 组件。
+
+### Changed
+- **Cargo.toml**：版本号 `0.1.21` → `0.1.22`
+
+---
+
 ## [0.1.15] - 2026-05-30
 
 ### Removed
