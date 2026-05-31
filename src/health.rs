@@ -1,11 +1,8 @@
-use std::collections::HashMap;
 use std::time::Instant;
 
 use colored::Colorize;
-use serde_json::Value;
 
 use crate::api::LlmClient;
-use crate::error::Result;
 use crate::models::LlmMessage;
 use crate::providers::{ProviderCredential, ProviderRegistry, scan_credentials};
 

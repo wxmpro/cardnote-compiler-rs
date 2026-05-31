@@ -259,9 +259,7 @@ pub fn lint_card_with_source(
     check_reference_consistency(card, &mut issues);
 
     // 规则6.5: ref 格式检查
-    // [v0.1.6] 强制要求 ref 符合格式规范：
-    // - 书籍：《书名》| 章节 | 第x页
-    // - PDF/报告：《文档名》| 第x页
+    // [v0.1.6] 强制要求 ref 符合 v3 格式规范：来源名_p页码
     check_ref_format(card, &mut issues);
 
     // 规则7: 类型化结构检查
@@ -1245,26 +1243,26 @@ mod tests {
     }
 
     #[test]
-    fn test_ref_format_no_book_mark() {
+    fn test_ref_format_no_p_marker() {
         let mut card = test_card();
         card.reference = "文档第236页".to_string();
         let config = CardLintConfig::default();
         let result = lint_card(&card, &config);
         assert!(
             result.issues.contains(&LintIssue::InvalidRefFormat),
-            "无书名号应为无效"
+            "无_p标记应为无效"
         );
     }
 
     #[test]
-    fn test_ref_format_no_page() {
+    fn test_ref_format_no_page_number() {
         let mut card = test_card();
-        card.reference = "《人生模式》| 导论".to_string();
+        card.reference = "人生模式_p".to_string();
         let config = CardLintConfig::default();
         let result = lint_card(&card, &config);
         assert!(
             result.issues.contains(&LintIssue::InvalidRefFormat),
-            "无页码应为无效"
+            "_p后无数字应为无效"
         );
     }
 
@@ -1281,14 +1279,14 @@ mod tests {
     }
 
     #[test]
-    fn test_ref_format_wrong_pipe_count() {
+    fn test_ref_format_invalid_v3() {
         let mut card = test_card();
-        card.reference = "《人生模式》| 导论 | 第7页 | 额外内容".to_string();
+        card.reference = "人生模式_abc".to_string();
         let config = CardLintConfig::default();
         let result = lint_card(&card, &config);
         assert!(
             result.issues.contains(&LintIssue::InvalidRefFormat),
-            "分隔符数量错误应为无效"
+            "_p后非数字应为无效"
         );
     }
 }

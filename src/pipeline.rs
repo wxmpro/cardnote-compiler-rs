@@ -203,6 +203,7 @@ impl StageCache {
 struct CompileContext {
     client: Arc<LlmClient>,
     prompts: Arc<HashMap<String, String>>,
+    #[allow(dead_code)]
     stage_models: Arc<HashMap<String, String>>,
     stage_cache_enabled: bool,
 }
@@ -230,6 +231,7 @@ impl CompileContext {
 
     /// 获取指定阶段的专用 client（支持 Tiered 模型）
     /// 如果该阶段未配置独立模型，返回当前 client
+    #[allow(dead_code)]
     fn client_for_stage(&self, stage: &str) -> LlmClient {
         if let Some(model) = self.stage_models.get(stage) {
             self.client.with_model(model)
