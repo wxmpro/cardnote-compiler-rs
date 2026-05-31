@@ -1,6 +1,6 @@
 use serde_json::Value;
 
-use crate::config::DOC_LIMITS;
+use crate::config::doc_limits_for;
 use crate::error::Result;
 use crate::models::{Entity, KnowledgeGraph, LlmMessage, Relation};
 use crate::stages::common::{ChatFn, ChatJsonFn};
@@ -38,7 +38,7 @@ pub async fn build_graph(
                     content: prompt,
                 },
             ],
-            Some(DOC_LIMITS.graph_output as u32),
+            Some(doc_limits_for(document.chars().count()).graph_output as u32),
         )
         .await
     {

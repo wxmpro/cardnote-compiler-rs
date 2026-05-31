@@ -484,6 +484,48 @@ pub struct LlmRequest {
     pub response_format: Option<ResponseFormat>,
 }
 
+/// LLM 调用用量统计
+#[derive(Debug, Clone, Default)]
+pub struct LlmUsage {
+    pub prompt_tokens: u32,
+    pub completion_tokens: u32,
+    pub total_tokens: u32,
+    /// 缓存命中 token 数（Anthropic cache_read_input_tokens）
+    pub cached_tokens: u32,
+    /// 缓存创建 token 数（Anthropic cache_creation_input_tokens）
+    pub cache_creation_tokens: u32,
+    pub model: String,
+    pub latency_ms: u64,
+}
+
+impl LlmUsage {
+    pub fn format_report(usages: &[Self]) -> String {
+        if usages.is_empty() {
+            return "无 LLM 调用记录".to_string();
+        }
+        let total_prompt: u32 = usages.iter().map(|u| u.prompt_tokens).sum();
+        let total_completion: u32 = usages.iter().map(|u| u.completion_tokens).sum();
+        let total: u32 = usages.iter().map(|u| u.total_tokens).sum();
+        let total_cached: u32 = usages.iter().map(|u| u.cached_tokens).sum();
+        let avg_latency: u64 = usages.iter().map(|u| u.latency_ms).sum::<u64>() / usages.len() as u64;
+        let mut lines = vec![
+            "╔════════════════════════════════════════════════════════════╗".to_string(),
+            "║                 LLM 调用用量报告                          ║".to_string(),
+            "╠════════════════════════════════════════════════════════════╣".to_string(),
+            format!("║ 调用次数: {:<45}║", usages.len()),
+            format!("║ Input tokens:  {:<39}║", total_prompt),
+            format!("║ Output tokens: {:<39}║", total_completion),
+            format!("║ Total tokens:  {:<39}║", total),
+        ];
+        if total_cached > 0 {
+            lines.push(format!("║ Cached tokens: {:<39}║", total_cached));
+        }
+        lines.push(format!("║ 平均延迟: {:<44}║", format!("{}ms", avg_latency)));
+        lines.push("╚════════════════════════════════════════════════════════════╝".to_string());
+        lines.join("\n")
+    }
+}
+
 /// 响应格式(用于 JSON 模式)
 #[derive(Debug, Clone, Serialize)]
 pub struct ResponseFormat {

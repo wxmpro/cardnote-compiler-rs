@@ -5,26 +5,32 @@ use colored::Colorize;
 use reqwest::Client;
 use serde_json::Value;
 
+use std::sync::Mutex;
+
 use crate::config::get_provider_config;
 use crate::error::{AppError, Result};
-use crate::models::{LlmMessage, LlmRequest, ResponseFormat};
+use crate::models::{LlmMessage, LlmRequest, LlmUsage, ResponseFormat};
 use crate::providers::ProviderRegistry;
 
 /// 默认请求超时(秒)
 const DEFAULT_TIMEOUT_SECS: u64 = 120;
 
-/// LLM 客户端（支持模型自动回退）
+/// LLM 客户端（支持模型自动回退 + Token 用量追踪 + 多协议 JSON）
 #[derive(Debug, Clone)]
 pub struct LlmClient {
     client: Client,
     api_key: String,
     base_url: String,
     pub model: String,
+    /// 提供商 ID（用于区分协议类型：openai / anthropic / gemini / ...）
+    provider_id: String,
     /// 同一提供商中支持 JSON mode 的备用模型列表
     fallback_models: Vec<String>,
     /// 当前使用的模型索引（0=主模型，1+=fallback），用 Arc<AtomicUsize> 支持 Clone + &self 调用
     /// [C1] 改用 AtomicUsize 避免 async 上下文中阻塞 tokio worker
     current_model_idx: Arc<AtomicUsize>,
+    /// 累积的 LLM 调用用量统计
+    usage_log: Arc<Mutex<Vec<LlmUsage>>>,
 }
 
 impl LlmClient {
@@ -32,6 +38,7 @@ impl LlmClient {
         api_key: String,
         base_url: String,
         model: String,
+        provider_id: String,
         fallback_models: Vec<String>,
     ) -> Result<Self> {
         let client = Client::builder()
@@ -43,8 +50,10 @@ impl LlmClient {
             api_key,
             base_url,
             model,
+            provider_id,
             fallback_models,
             current_model_idx: Arc::new(AtomicUsize::new(0)),
+            usage_log: Arc::new(Mutex::new(Vec::new())),
         })
     }
 
@@ -89,6 +98,20 @@ impl LlmClient {
     /// 重置到主模型（每次新请求前调用）
     fn reset_model(&self) {
         self.current_model_idx.store(0, Ordering::Relaxed);
+    }
+
+    /// 创建使用指定模型的临时 client（共享 HTTP 连接池和用量统计）
+    pub fn with_model(&self, model: &str) -> Self {
+        Self {
+            client: self.client.clone(),
+            api_key: self.api_key.clone(),
+            base_url: self.base_url.clone(),
+            model: model.to_string(),
+            provider_id: self.provider_id.clone(),
+            fallback_models: self.fallback_models.clone(),
+            current_model_idx: Arc::new(AtomicUsize::new(0)),
+            usage_log: self.usage_log.clone(),
+        }
     }
 
     /// 发送聊天请求，返回原始响应 JSON
@@ -164,11 +187,19 @@ impl LlmClient {
             );
         }
 
+        // 按 Provider 协议选择 JSON mode 策略
+        // OpenAI 兼容协议：使用 response_format: json_object
+        // Anthropic / Gemini / Cohere：仅依赖 system prompt 要求 JSON，不使用 response_format
+        let use_json_object = !matches!(self.provider_id.as_str(), "anthropic" | "google" | "cohere");
         let request = LlmRequest {
             model: model.to_string(),
             messages: modified_messages,
             max_tokens,
-            response_format: Some(ResponseFormat::json_object()),
+            response_format: if use_json_object {
+                Some(ResponseFormat::json_object())
+            } else {
+                None
+            },
         };
 
         // 重试逻辑：最多 3 次，指数退避
@@ -226,10 +257,70 @@ impl LlmClient {
         Err(AppError::Api("无法从响应中提取内容".to_string()))
     }
 
-    /// 发送 HTTP 请求
+    /// 从响应中提取 Token 用量（兼容 OpenAI/DeepSeek 和 Anthropic 格式）
+    pub fn extract_usage(&self, response: &Value, latency_ms: u64) -> LlmUsage {
+        let usage = response.get("usage");
+        let mut prompt_tokens = 0u32;
+        let mut completion_tokens = 0u32;
+        let mut total_tokens = 0u32;
+        let mut cached_tokens = 0u32;
+        let mut cache_creation_tokens = 0u32;
+
+        if let Some(u) = usage {
+            // OpenAI / DeepSeek 格式: prompt_tokens / completion_tokens / total_tokens
+            prompt_tokens = u.get("prompt_tokens").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+            completion_tokens = u.get("completion_tokens").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+            total_tokens = u.get("total_tokens").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+            // Anthropic 格式: input_tokens / output_tokens
+            if prompt_tokens == 0 {
+                prompt_tokens = u.get("input_tokens").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+                completion_tokens = u.get("output_tokens").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+                total_tokens = prompt_tokens + completion_tokens;
+            }
+            // Anthropic 缓存字段
+            cached_tokens = u.get("cache_read_input_tokens").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+            cache_creation_tokens = u.get("cache_creation_input_tokens").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+        }
+
+        LlmUsage {
+            prompt_tokens,
+            completion_tokens,
+            total_tokens,
+            cached_tokens,
+            cache_creation_tokens,
+            model: self.current_model(),
+            latency_ms,
+        }
+    }
+
+    /// 记录一次调用用量
+    pub fn record_usage(&self, usage: LlmUsage) {
+        if let Ok(mut log) = self.usage_log.lock() {
+            log.push(usage);
+        }
+    }
+
+    /// 获取累积的用量报告
+    pub fn usage_report(&self) -> String {
+        let log = match self.usage_log.lock() {
+            Ok(guard) => guard,
+            Err(_) => return "⚠ 用量统计不可用".to_string(),
+        };
+        LlmUsage::format_report(&log)
+    }
+
+    /// 清空用量日志
+    pub fn clear_usage(&self) {
+        if let Ok(mut log) = self.usage_log.lock() {
+            log.clear();
+        }
+    }
+
+    /// 发送 HTTP 请求（内部自动记录 Token 用量和延迟）
     async fn send_request(&self, request: LlmRequest) -> Result<Value> {
         let url = format!("{}/chat/completions", self.base_url.trim_end_matches('/'));
 
+        let start = std::time::Instant::now();
         let response = self
             .client
             .post(&url)
@@ -245,6 +336,10 @@ impl LlmClient {
             .json::<Value>()
             .await
             .map_err(|e| AppError::Api(format!("响应解析失败: {}", e)))?;
+
+        let latency_ms = start.elapsed().as_millis() as u64;
+        let usage = self.extract_usage(&body, latency_ms);
+        self.record_usage(usage);
 
         if !status.is_success() {
             let error_msg = body
@@ -308,6 +403,7 @@ pub fn create_client(
         api_key.to_string(),
         effective_base_url,
         effective_model,
+        provider.to_string(),
         fallback_models,
     )
 }

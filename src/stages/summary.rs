@@ -1,6 +1,6 @@
 use regex::Regex;
 
-use crate::config::DOC_LIMITS;
+use crate::config::{DOC_LIMITS, doc_limits_for};
 use crate::error::Result;
 use crate::models::{LlmMessage, Summary};
 use crate::stages::common::ChatFn;
@@ -29,7 +29,7 @@ pub async fn generate_summary(
                     content: user,
                 },
             ],
-            Some(DOC_LIMITS.summary_output as u32),
+            Some(doc_limits_for(document.chars().count()).summary_output as u32),
         )
         .await
     {

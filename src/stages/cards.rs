@@ -2,7 +2,7 @@ use std::sync::{LazyLock, Mutex};
 
 use chrono::Local;
 
-use crate::config::DOC_LIMITS;
+use crate::config::doc_limits_for;
 use crate::doc_type::DocumentType;
 use crate::error::Result;
 use crate::models::{Card, CardStatus, CardType, LlmMessage};
@@ -248,8 +248,8 @@ pub async fn generate_cards(
     let plan = CardPlanner::plan(doc_type, document.len());
     let mut all_cards = Vec::new();
 
-    // 只处理必选类型
-    for item in plan.iter().filter(|i| i.required) {
+    // 处理所有规划类型（不再区分必选/可选）
+    for item in plan.iter() {
         let prompt_name = card_type_prompt_name(&item.card_type);
         let prompt_template = match load_prompt(prompt_name) {
             Ok(p) => p,
@@ -278,7 +278,7 @@ pub async fn generate_cards(
                         content: prompt,
                     },
                 ],
-                Some(DOC_LIMITS.compile_output as u32),
+                Some(doc_limits_for(document.chars().count()).compile_output as u32),
             )
             .await
         {

@@ -1,6 +1,6 @@
 use serde_json::Value;
 
-use crate::config::DOC_LIMITS;
+use crate::config::doc_limits_for;
 use crate::error::Result;
 use crate::models::{Entity, LlmMessage};
 
@@ -28,7 +28,7 @@ pub async fn extract_entities(
                     content: prompt,
                 },
             ],
-            Some(DOC_LIMITS.entity_output as u32),
+            Some(doc_limits_for(document.chars().count()).entity_output as u32),
         )
         .await
     {

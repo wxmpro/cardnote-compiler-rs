@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, LazyLock};
 
 use regex::Regex;
+use tokio::sync::Semaphore;
 use serde::{Deserialize, Serialize};
 
 use crate::api::LlmClient;
@@ -128,11 +129,82 @@ impl CompileCache {
     }
 }
 
+// ── Stage-level 缓存 ──
+
+/// Stage 缓存：按阶段（summary/entities/cards/graph）缓存编译结果
+///
+/// 缓存 key = SHA256(stage_name + "|" + document_hash + "|" + prompt_hash + "|" + model_name)
+/// 失效条件：文档内容改变 / prompt 模板改变 / 模型改变
+struct StageCache;
+
+impl StageCache {
+    const CACHE_DIR: &'static str = ".cardc_cache/stages";
+    const VERSION: &'static str = "v1";
+
+    /// 计算缓存 key
+    fn cache_key(stage: &str, document: &str, prompt: &str, model: &str) -> String {
+        let doc_hash = Self::fnv1a_hash(document);
+        let prompt_hash = Self::fnv1a_hash(prompt);
+        let combined = format!("{}|{}|{}|{}|{}", Self::VERSION, stage, doc_hash, prompt_hash, model);
+        Self::fnv1a_hash(&combined)
+    }
+
+    /// FNV-1a 哈希
+    fn fnv1a_hash(data: &str) -> String {
+        let mut hash: u64 = 0xcbf29ce484222325;
+        for byte in data.bytes() {
+            hash ^= byte as u64;
+            hash = hash.wrapping_mul(0x100000001b3);
+        }
+        format!("{:x}", hash)
+    }
+
+    /// 缓存文件路径
+    fn cache_path(stage: &str, key: &str) -> PathBuf {
+        let dir = Path::new(Self::CACHE_DIR);
+        std::fs::create_dir_all(dir).ok();
+        dir.join(format!("{}_{}.json", stage, key))
+    }
+
+    /// 加载缓存
+    fn load<T: serde::de::DeserializeOwned>(
+        stage: &str,
+        document: &str,
+        prompt: &str,
+        model: &str,
+    ) -> Option<T> {
+        let key = Self::cache_key(stage, document, prompt, model);
+        let path = Self::cache_path(stage, &key);
+        if !path.exists() {
+            return None;
+        }
+        let content = std::fs::read_to_string(&path).ok()?;
+        serde_json::from_str(&content).ok()
+    }
+
+    /// 保存缓存
+    fn save<T: serde::Serialize>(
+        stage: &str,
+        document: &str,
+        prompt: &str,
+        model: &str,
+        value: &T,
+    ) {
+        let key = Self::cache_key(stage, document, prompt, model);
+        let path = Self::cache_path(stage, &key);
+        if let Ok(json) = serde_json::to_string_pretty(value) {
+            std::fs::write(&path, json).ok();
+        }
+    }
+}
+
 /// 编译上下文（可 Clone，用于并行任务）
 #[derive(Clone, Debug)]
 struct CompileContext {
     client: Arc<LlmClient>,
     prompts: Arc<HashMap<String, String>>,
+    stage_models: Arc<HashMap<String, String>>,
+    stage_cache_enabled: bool,
 }
 
 impl CompileContext {
@@ -154,6 +226,47 @@ impl CompileContext {
             .get(name)
             .cloned()
             .ok_or_else(|| AppError::PromptLoad(format!("Prompt 模板文件不存在: {}.md", name)))
+    }
+
+    /// 获取指定阶段的专用 client（支持 Tiered 模型）
+    /// 如果该阶段未配置独立模型，返回当前 client
+    fn client_for_stage(&self, stage: &str) -> LlmClient {
+        if let Some(model) = self.stage_models.get(stage) {
+            self.client.with_model(model)
+        } else {
+            (*self.client).clone()
+        }
+    }
+
+    /// 尝试加载阶段缓存
+    fn try_load_stage<T: serde::de::DeserializeOwned>(
+        &self,
+        stage: &str,
+        document: &str,
+        prompt_name: &str,
+    ) -> Option<T> {
+        if !self.stage_cache_enabled {
+            return None;
+        }
+        let prompt = self.prompts.get(prompt_name).cloned().unwrap_or_default();
+        let model = self.client.model.clone();
+        StageCache::load(stage, document, &prompt, &model)
+    }
+
+    /// 保存阶段缓存
+    fn save_stage<T: serde::Serialize>(
+        &self,
+        stage: &str,
+        document: &str,
+        prompt_name: &str,
+        value: &T,
+    ) {
+        if !self.stage_cache_enabled {
+            return;
+        }
+        let prompt = self.prompts.get(prompt_name).cloned().unwrap_or_default();
+        let model = self.client.model.clone();
+        StageCache::save(stage, document, &prompt, &model, value);
     }
 }
 
@@ -215,10 +328,31 @@ impl Pipeline {
             }
         }
 
+        // 加载阶段模型配置（Tiered Strategy，默认全部使用同一模型）
+        let stage_models = crate::config::StageModelConfig::from_env();
+        let mut stage_model_map = HashMap::new();
+        for (stage, model_opt) in [
+            ("summary", stage_models.summary),
+            ("entities", stage_models.entities),
+            ("cards", stage_models.cards),
+            ("graph", stage_models.graph),
+        ] {
+            if let Some(model) = model_opt {
+                stage_model_map.insert(stage.to_string(), model);
+            }
+        }
+
+        // Stage 缓存：默认启用，可通过环境变量关闭
+        let stage_cache_enabled = std::env::var("CARDC_DISABLE_STAGE_CACHE")
+            .map(|v| v != "1" && v != "true")
+            .unwrap_or(true);
+
         Self {
             ctx: CompileContext {
                 client: Arc::new(client),
                 prompts: Arc::new(prompts),
+                stage_models: Arc::new(stage_model_map),
+                stage_cache_enabled,
             },
         }
     }
@@ -300,30 +434,40 @@ impl Pipeline {
         let mut diagnostics = CompilationDiagnostics::default();
         let ctx = &self.ctx;
 
-        // 摘要阶段
-        let summary = match generate_summary(document, ctx, &|name| ctx.load_prompt(name)).await {
-            Ok(s) => {
-                println!("  ✓ 摘要完成");
-                s
-            }
-            Err(e) => {
-                let err_msg = format!("{}", e);
-                println!("  ✗ 摘要失败: {}", err_msg);
-                diagnostics.failures.push(StageFail {
-                    stage: "summary".to_string(),
-                    error: err_msg,
-                    retry_count: 0,
-                    final_status: "failed".to_string(),
-                });
-                Summary::default()
+        // 摘要阶段（含缓存）
+        let summary = if let Some(cached) = ctx.try_load_stage::<Summary>("summary", document, "summary") {
+            println!("  💾 摘要缓存命中");
+            cached
+        } else {
+            match generate_summary(document, ctx, &|name| ctx.load_prompt(name)).await {
+                Ok(s) => {
+                    println!("  ✓ 摘要完成");
+                    ctx.save_stage("summary", document, "summary", &s);
+                    s
+                }
+                Err(e) => {
+                    let err_msg = format!("{}", e);
+                    println!("  ✗ 摘要失败: {}", err_msg);
+                    diagnostics.failures.push(StageFail {
+                        stage: "summary".to_string(),
+                        error: err_msg,
+                        retry_count: 0,
+                        final_status: "failed".to_string(),
+                    });
+                    Summary::default()
+                }
             }
         };
 
-        // 实体阶段
-        let entities =
+        // 实体阶段（含缓存）
+        let entities = if let Some(cached) = ctx.try_load_stage::<Vec<Entity>>("entities", document, "entity_extraction") {
+            println!("  💾 实体缓存命中 — {} 个实体", cached.len());
+            cached
+        } else {
             match extract_entities(document, ctx, ctx, &|name| ctx.load_prompt(name)).await {
                 Ok(e) => {
                     println!("  ✓ 标注完成 — 识别 {} 个实体", e.len());
+                    ctx.save_stage("entities", document, "entity_extraction", &e);
                     e
                 }
                 Err(e) => {
@@ -337,7 +481,8 @@ impl Pipeline {
                     });
                     Vec::new()
                 }
-            };
+            }
+        };
 
         // 卡片阶段
         let cards =
@@ -359,11 +504,15 @@ impl Pipeline {
                 }
             };
 
-        // 图谱阶段
-        let graph =
+        // 图谱阶段（含缓存）
+        let graph = if let Some(cached) = ctx.try_load_stage::<KnowledgeGraph>("graph", document, "relation_graph") {
+            println!("  💾 图谱缓存命中 — {} 条关系", cached.relations.len());
+            cached
+        } else {
             match build_graph(document, &entities, ctx, ctx, &|name| ctx.load_prompt(name)).await {
                 Ok(g) => {
                     println!("  ✓ 图谱完成 — {} 条关系", g.relations.len());
+                    ctx.save_stage("graph", document, "relation_graph", &g);
                     g
                 }
                 Err(e) => {
@@ -380,7 +529,8 @@ impl Pipeline {
                         relations: Vec::new(),
                     }
                 }
-            };
+            }
+        };
 
         println!("\n{}", "=".repeat(60));
         println!("编译完成！");
@@ -397,6 +547,9 @@ impl Pipeline {
             );
         }
         println!("{}", "=".repeat(60));
+
+        // 输出 LLM 用量报告
+        println!("\n{}", ctx.client.usage_report());
 
         Ok(CompilationResult {
             source_file: source_file.to_string(),
@@ -450,12 +603,28 @@ impl Pipeline {
             println!("  🔄 继续编译未完成的块: {:?}", pending);
         }
 
-        // 2b. 编译未完成的块
+        // 2b. 编译未完成的块（最多 2 个并发，避免触发 API 限流）
+        let semaphore = Arc::new(Semaphore::new(2));
+        let mut handles = Vec::new();
         for idx in &pending {
-            let (title, doc) = chunks[*idx].clone();
-            println!("  处理块 {}/{}...", idx + 1, chunks_len);
+            let idx = *idx; // copy to avoid borrow issue
+            let permit = semaphore.clone().acquire_owned().await.map_err(|e| {
+                AppError::TaskPanic(format!("并发信号量获取失败: {}", e))
+            })?;
             let ctx = self.ctx.clone();
-            match compile_chunk(ctx, doc, title, doc_type).await {
+            let (title, doc) = chunks[idx].clone();
+            println!("  处理块 {}/{}...", idx + 1, chunks_len);
+            handles.push(tokio::spawn(async move {
+                let _permit = permit;
+                let result = compile_chunk(ctx, doc, title, doc_type).await;
+                (idx, result)
+            }));
+        }
+        for handle in handles {
+            let (idx, result) = handle
+                .await
+                .map_err(|e| AppError::TaskPanic(format!("并发任务 panic: {}", e)))?;
+            match result {
                 Ok(result) => {
                     println!(
                         "  ✓ 块 {}/{} 完成 — 实体 {} 个 | 卡片 {} 张",
@@ -464,14 +633,14 @@ impl Pipeline {
                         result.entities.len(),
                         result.cards.len()
                     );
-                    chunk_results[*idx] = result.clone();
-                    cache.set_chunk_result(*idx, result);
+                    chunk_results[idx] = result.clone();
+                    cache.set_chunk_result(idx, result);
                     cache.save(source_file).ok();
                 }
                 Err(e) => {
                     let err_msg = format!("块 {} 编译失败: {}", idx + 1, e);
                     println!("  ✗ {}", err_msg);
-                    failed_chunks.push((*idx, err_msg));
+                    failed_chunks.push((idx, err_msg));
                 }
             }
         }
@@ -622,6 +791,9 @@ impl Pipeline {
             unique_relations.len()
         );
         println!("{}", "=".repeat(60));
+
+        // 输出 LLM 用量报告
+        println!("\n{}", ctx.client.usage_report());
 
         Ok(CompilationResult {
             source_file: source_file.to_string(),
@@ -790,18 +962,16 @@ async fn compile_chunk(
             .unwrap_or_else(|| crate::error::AppError::TaskPanic(format!("{} 全部重试失败", name))))
     }
 
-    // summary / entities / cards 串行执行，避免并发 API 请求过多触发限流
-    // [H6] 改为显式错误传播：子阶段失败时返回 Err，由上层调用方（run_map_reduce）
-    // 进行重试或记录到 failed_chunks，避免静默用空默认值替换有效数据
-    let summary = with_retry("摘要", || {
-        generate_summary(&document, ctx_ref, &load_prompt)
-    })
-    .await?;
-
-    let entities = with_retry("实体", || {
-        extract_entities(&document, ctx_ref, ctx_ref, &load_prompt)
-    })
-    .await?;
+    // summary 和 entities 互不依赖，并行执行
+    // cards 和 graph 串行（graph 依赖 entities 结果）
+    let (summary, entities) = tokio::try_join!(
+        with_retry("摘要", || {
+            generate_summary(&document, ctx_ref, &load_prompt)
+        }),
+        with_retry("实体", || {
+            extract_entities(&document, ctx_ref, ctx_ref, &load_prompt)
+        }),
+    )?;
 
     let cards = with_retry("卡片", || {
         generate_cards(&document, doc_type, ctx_ref, &load_prompt)

@@ -35,7 +35,30 @@ pub struct DocLimits {
     pub compile_output: usize,
 }
 
-/// 默认文档限制（中文文本）
+/// 根据文档字符数动态计算各阶段 max_tokens
+///
+/// 逻辑：
+/// - summary: 固定 2000（摘要始终是压缩任务）
+/// - entities: min(max(doc_chars/20, 2000), 8000)
+/// - graph:    min(max(doc_chars/15, 2000), 8000)
+/// - cards:    min(max(doc_chars/8,  3000), 8000)
+/// - index:    固定 4000
+pub fn doc_limits_for(doc_chars: usize) -> DocLimits {
+    let scale = |base: usize, divisor: usize, min: usize, max: usize| -> usize {
+        (doc_chars / divisor).clamp(min, max)
+    };
+    DocLimits {
+        summary_input: 12000,
+        summary_output: 2000,
+        entity_output: scale(doc_chars, 20, 2000, 8000),
+        graph_output: scale(doc_chars, 15, 2000, 8000),
+        card_output: scale(doc_chars, 8, 3000, 8000),
+        index_output: 4000,
+        compile_output: scale(doc_chars, 8, 3000, 8000),
+    }
+}
+
+/// 向后兼容：静态默认值（文档 ≤ 50K 字符时与旧行为一致）
 pub const DOC_LIMITS: DocLimits = DocLimits {
     summary_input: 12000,
     summary_output: 2000,
@@ -45,6 +68,54 @@ pub const DOC_LIMITS: DocLimits = DocLimits {
     index_output: 4000,
     compile_output: 8000,
 };
+
+// ═══════════════════════════════════════════════════════
+//  Stage-level 模型配置（Tiered Strategy）
+// ═══════════════════════════════════════════════════════
+
+/// 各阶段可独立配置模型，空字符串表示使用默认模型
+pub struct StageModelConfig {
+    pub summary: Option<String>,
+    pub entities: Option<String>,
+    pub cards: Option<String>,
+    pub graph: Option<String>,
+}
+
+/// 默认：所有阶段使用同一模型（向后兼容）
+impl Default for StageModelConfig {
+    fn default() -> Self {
+        Self {
+            summary: None,
+            entities: None,
+            cards: None,
+            graph: None,
+        }
+    }
+}
+
+impl StageModelConfig {
+    /// 从环境变量加载阶段模型配置
+    /// LLM_MODEL_SUMMARY / LLM_MODEL_ENTITIES / LLM_MODEL_CARDS / LLM_MODEL_GRAPH
+    pub fn from_env() -> Self {
+        Self {
+            summary: std::env::var("LLM_MODEL_SUMMARY").ok(),
+            entities: std::env::var("LLM_MODEL_ENTITIES").ok(),
+            cards: std::env::var("LLM_MODEL_CARDS").ok(),
+            graph: std::env::var("LLM_MODEL_GRAPH").ok(),
+        }
+    }
+
+    /// 获取指定阶段的模型，未配置返回 None
+    pub fn model_for_stage(&self, stage: &str) -> Option<&String> {
+        match stage {
+            "summary" => self.summary.as_ref(),
+            "entities" => self.entities.as_ref(),
+            "cards" => self.cards.as_ref(),
+            "graph" => self.graph.as_ref(),
+            _ => None,
+        }
+    }
+}
 
 /// 输出文件时间戳格式
 pub const TIMESTAMP_FORMAT: &str = "%Y%m%d%H%M%S";
