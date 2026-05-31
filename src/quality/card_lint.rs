@@ -737,7 +737,8 @@ fn find_concept_page_by_title(title: &str, source_text: &str) -> Option<String> 
 ///
 /// 支持两种格式：
 /// - v3 格式：`来源名_p页码`（如 `人生模式_p160`）
-/// - 旧格式：《书名》| 章节名 | 第{x}页 或 《文档名》| 第{x}页
+/// 只接受 v3 格式：`来源名_p页码`
+/// 示例：人生模式_p160
 fn check_ref_format(card: &Card, issues: &mut Vec<LintIssue>) {
     let ref_text = card.reference.trim();
 
@@ -747,73 +748,22 @@ fn check_ref_format(card: &Card, issues: &mut Vec<LintIssue>) {
         return;
     }
 
-    // [v0.1.7] 自动将全角分隔符 ｜ 转换为半角 |
-    let ref_text = if ref_text.contains('｜') {
-        ref_text.replace('｜', "|")
-    } else {
-        ref_text.to_string()
-    };
-
-    // 检查是否为 v3 格式：`来源名_p页码`
-    // 示例：人生模式_p160、阳志平《聪明的阅读者》
-    let is_v3_format = ref_text.contains("_p");
-    if is_v3_format {
-        // v3 格式：只要包含 `_p` 就认为是合法的
-        // 进一步检查 `_p` 后面是否有数字
-        if let Some(idx) = ref_text.find("_p") {
-            let after = &ref_text[idx + 2..];
-            if after.chars().next().map_or(false, |c| c.is_ascii_digit()) {
-                return; // v3 格式通过
-            }
-        }
-        // _p 后面没有数字，仍然算不完整的格式
+    // 必须为 v3 格式：`来源名_p页码`
+    if !ref_text.contains("_p") {
         issues.push(LintIssue::InvalidRefFormat);
         return;
     }
 
-    // 旧格式检查：《书名》| 章节 | 第x页
-
-    // 必须包含书名号《...》
-    let has_book_mark = ref_text.contains('《') && ref_text.contains('》');
-    if !has_book_mark {
-        issues.push(LintIssue::InvalidRefFormat);
-        return;
-    }
-
-    // 必须包含页码标记"第...页"
-    let has_page = ref_text.contains('第') && ref_text.contains('页');
-    if !has_page {
-        issues.push(LintIssue::InvalidRefFormat);
-        return;
-    }
-
-    // 检查分隔符 | 的数量
-    let pipe_count = ref_text.matches('|').count();
-    if pipe_count != 1 && pipe_count != 2 {
-        issues.push(LintIssue::InvalidRefFormat);
-        return;
-    }
-
-    // 禁止词检查
-    let banned = ["出处"];
-    for b in &banned {
-        if ref_text.contains(b) {
-            issues.push(LintIssue::InvalidRefFormat);
-            return;
+    // 检查 `_p` 后面是否有数字
+    if let Some(idx) = ref_text.find("_p") {
+        let after = &ref_text[idx + 2..];
+        if after.chars().next().map_or(false, |c| c.is_ascii_digit()) {
+            return; // v3 格式通过
         }
     }
 
-    // 提取书名号中的内容，检查是否为空
-    if let Some(start) = ref_text.find('《') {
-        if let Some(end) = ref_text.find('》') {
-            if start < end {
-                let book_name = &ref_text[start + '《'.len_utf8()..end];
-                if book_name.trim().is_empty() {
-                    issues.push(LintIssue::InvalidRefFormat);
-                }
-            }
-        }
-    }
+    // _p 后面没有数字
+    issues.push(LintIssue::InvalidRefFormat);
 }
 
 /// 检查类型化卡片结构要求
@@ -983,7 +933,7 @@ mod tests {
             title: "标题A".to_string(),
             content: "内容A内容A内容A内容A内容A内容A内容A内容A内容A内容A。标题A。".to_string(),
             card_type: CardType::Knowledge,
-            reference: "《测试文档》| 第23页".to_string(),
+            reference: "测试文档_p23".to_string(),
             unique_id: "20240101120000".to_string(),
             original_text: "".to_string(),
             source: "".to_string(),
@@ -1258,12 +1208,12 @@ mod tests {
     #[test]
     fn test_ref_format_book_valid() {
         let mut card = test_card();
-        card.reference = "《人生模式》| 导论 优化你的人生模式 | 第7页".to_string();
+        card.reference = "人生模式_p7".to_string();
         let config = CardLintConfig::default();
         let result = lint_card(&card, &config);
         assert!(
             !result.issues.contains(&LintIssue::InvalidRefFormat),
-            "书籍格式应为有效: {}",
+            "v3格式应为有效: {}",
             card.reference
         );
     }
@@ -1271,12 +1221,12 @@ mod tests {
     #[test]
     fn test_ref_format_pdf_valid() {
         let mut card = test_card();
-        card.reference = "《Result_20》| 第15页".to_string();
+        card.reference = "Result_20_p15".to_string();
         let config = CardLintConfig::default();
         let result = lint_card(&card, &config);
         assert!(
             !result.issues.contains(&LintIssue::InvalidRefFormat),
-            "PDF格式应为有效: {}",
+            "v3格式应为有效: {}",
             card.reference
         );
     }
