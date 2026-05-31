@@ -39,22 +39,22 @@ pub struct DocLimits {
 ///
 /// 逻辑：
 /// - summary: 固定 2000（摘要始终是压缩任务）
-/// - entities: min(max(doc_chars/20, 2000), 8000)
-/// - graph:    min(max(doc_chars/15, 2000), 8000)
+/// - entities: min(max(doc_chars/20, 4000), 8000)  — JSON 输出需要较大空间
+/// - graph:    min(max(doc_chars/15, 4000), 8000)  — JSON 输出需要较大空间
 /// - cards:    min(max(doc_chars/8,  3000), 8000)
 /// - index:    固定 4000
 pub fn doc_limits_for(doc_chars: usize) -> DocLimits {
-    let scale = |base: usize, divisor: usize, min: usize, max: usize| -> usize {
+    let scale = |divisor: usize, min: usize, max: usize| -> usize {
         (doc_chars / divisor).clamp(min, max)
     };
     DocLimits {
         summary_input: 12000,
         summary_output: 2000,
-        entity_output: scale(doc_chars, 20, 2000, 8000),
-        graph_output: scale(doc_chars, 15, 2000, 8000),
-        card_output: scale(doc_chars, 8, 3000, 8000),
+        entity_output: scale(20, 4000, 8000),
+        graph_output: scale(15, 4000, 8000),
+        card_output: scale(8, 3000, 8000),
         index_output: 4000,
-        compile_output: scale(doc_chars, 8, 3000, 8000),
+        compile_output: scale(8, 3000, 8000),
     }
 }
 
