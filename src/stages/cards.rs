@@ -338,6 +338,11 @@ fn parse_single_type_cards(response: &str, card_type: CardType) -> Result<Vec<Ca
         let title = extract_field(block, "标题").unwrap_or_default();
         let reference = extract_field(block, "ref").unwrap_or_default();
 
+        // 金句卡专属字段
+        let original_text = extract_field(block, "原文").unwrap_or_default();
+        let source = extract_field(block, "出处").unwrap_or_default();
+        let paraphrase = extract_field(block, "仿写").unwrap_or_default();
+
         // 构建 content：保留所有类型专属字段，排除通用字段
         let mut content_lines = Vec::new();
 
@@ -366,6 +371,13 @@ fn parse_single_type_cards(response: &str, card_type: CardType) -> Result<Vec<Ca
 
             // 跳过 uuid 字段行
             if (trimmed.starts_with("uuid") || trimmed.starts_with("唯一编码"))
+                && (trimmed.contains("：") || trimmed.contains(":"))
+            {
+                continue;
+            }
+
+            // 跳过金句卡专属字段行（已单独提取）
+            if (trimmed.starts_with("原文") || trimmed.starts_with("出处") || trimmed.starts_with("仿写"))
                 && (trimmed.contains("：") || trimmed.contains(":"))
             {
                 continue;
@@ -411,9 +423,9 @@ fn parse_single_type_cards(response: &str, card_type: CardType) -> Result<Vec<Ca
                 card_type: card_type.clone(),
                 reference,
                 unique_id: String::new(),
-                original_text: String::new(),
-                source: String::new(),
-                paraphrase: String::new(),
+                original_text,
+                source,
+                paraphrase,
                 related_cards: Vec::new(),
                 source_file: String::new(),
                 chunk_id: String::new(),
