@@ -417,6 +417,12 @@ fn parse_single_type_cards(response: &str, card_type: CardType) -> Result<Vec<Ca
         let content = content_lines.join("\n").trim().to_string();
 
         if !title.is_empty() {
+            // 金句卡：source 用 reference 兜底（prompt 只要求 ref 字段）
+            let source = if card_type == CardType::Quote && source.is_empty() && !reference.is_empty() {
+                reference.clone()
+            } else {
+                source
+            };
             cards.push(Card {
                 title,
                 content,
