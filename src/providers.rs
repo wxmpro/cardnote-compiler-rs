@@ -843,6 +843,78 @@ impl ProviderRegistry {
                 },
             ],
         });
+
+        // AI1216 聚合平台
+        self.register(Provider {
+            id: "ai1216".to_string(),
+            name: "AI1216".to_string(),
+            aliases: vec!["1216".to_string(), "ai-1216".to_string()],
+            default_base_url: "https://ai.121628.xyz/v1".to_string(),
+            api_key_env_var: "AI1216_API_KEY".to_string(),
+            api_key_pattern: "sk-".to_string(),
+            requires_api_key: true,
+            protocol: ProviderProtocol::OpenAiCompatible,
+            config_file_paths: vec![
+                "~/.config/cardnote-compiler/providers.json".to_string(),
+                ".cardnote/providers.json".to_string(),
+            ],
+            description: "AI1216 聚合模型平台 (GLM/Kimi/MiniMax)".to_string(),
+            models: vec![
+                ModelInfo {
+                    id: "glm-5.1".to_string(),
+                    name: "GLM-5.1".to_string(),
+                    context_length: 128_000,
+                    max_output_tokens: 8192,
+                    supports_json_mode: true,
+                    supports_vision: true,
+                    description: "智谱 GLM-5.1 via AI1216".to_string(),
+                },
+                ModelInfo {
+                    id: "kimi-k2.6".to_string(),
+                    name: "Kimi K2.6".to_string(),
+                    context_length: 256_000,
+                    max_output_tokens: 8192,
+                    supports_json_mode: true,
+                    supports_vision: true,
+                    description: "Moonshot Kimi K2.6 via AI1216".to_string(),
+                },
+                ModelInfo {
+                    id: "minimax-m2.7".to_string(),
+                    name: "MiniMax M2.7".to_string(),
+                    context_length: 128_000,
+                    max_output_tokens: 8192,
+                    supports_json_mode: true,
+                    supports_vision: false,
+                    description: "MiniMax M2.7 via AI1216".to_string(),
+                },
+            ],
+        });
+
+        // DGBMC 聚合平台
+        self.register(Provider {
+            id: "dgbmc".to_string(),
+            name: "DGBMC".to_string(),
+            aliases: vec!["dgbmc".to_string()],
+            default_base_url: "https://freeapi.dgbmc.top/v1".to_string(),
+            api_key_env_var: "DGBMC_API_KEY".to_string(),
+            api_key_pattern: "sk-".to_string(),
+            requires_api_key: true,
+            protocol: ProviderProtocol::OpenAiCompatible,
+            config_file_paths: vec![
+                "~/.config/cardnote-compiler/providers.json".to_string(),
+                ".cardnote/providers.json".to_string(),
+            ],
+            description: "DGBMC 聚合模型平台 (Gemini)".to_string(),
+            models: vec![ModelInfo {
+                id: "gemini-3.1-pro".to_string(),
+                name: "Gemini 3.1 Pro".to_string(),
+                context_length: 1_000_000,
+                max_output_tokens: 8192,
+                supports_json_mode: true,
+                supports_vision: true,
+                description: "Google Gemini 3.1 Pro via DGBMC".to_string(),
+            }],
+        });
     }
 }
 
