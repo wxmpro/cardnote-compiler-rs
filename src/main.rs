@@ -214,6 +214,21 @@ async fn handle_scan(
     Ok(())
 }
 
+/// 从文件路径和 PDF 元数据解析书名
+fn resolve_book_title(file: &str, is_pdf: bool, summary_title: &str) -> String {
+    if is_pdf {
+        let meta = extract_pdf_metadata(file);
+        if !meta.title.is_empty() {
+            return meta.title;
+        }
+    }
+    Path::new(file)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or(summary_title)
+        .to_string()
+}
+
 // [H5] 主编译流程处理器（原 run() 中 None 分支的核心逻辑）
 async fn handle_compile(cli: Cli) -> cardnote_compiler::error::Result<()> {
     let file = cli
@@ -364,24 +379,7 @@ async fn handle_compile(cli: Cli) -> cardnote_compiler::error::Result<()> {
         println!("   输出目录仍会创建，但文件内容可能为空。");
     }
 
-    let book_title = if is_pdf {
-        let meta = extract_pdf_metadata(&file);
-        if !meta.title.is_empty() {
-            meta.title
-        } else {
-            Path::new(&file)
-                .file_stem()
-                .and_then(|s| s.to_str())
-                .unwrap_or(&result.summary.title)
-                .to_string()
-        }
-    } else {
-        Path::new(&file)
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .unwrap_or(&result.summary.title)
-            .to_string()
-    };
+    let book_title = resolve_book_title(&file, is_pdf, &result.summary.title);
 
     let doc_dir = Path::new("./documents");
     tokio::fs::create_dir_all(&doc_dir).await.ok();

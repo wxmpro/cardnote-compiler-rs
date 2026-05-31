@@ -198,6 +198,57 @@ impl StageCache {
     }
 }
 
+/// 清理过期缓存文件
+/// 策略：删除超过 30 天未修改的 .json/.cache.json 文件；若总文件数超过 200，额外删除最旧的
+fn cleanup_cache_dir() {
+    const MAX_AGE_DAYS: u64 = 30;
+    const MAX_FILES: usize = 200;
+    let cutoff = std::time::SystemTime::now()
+        - std::time::Duration::from_secs(MAX_AGE_DAYS * 86400);
+
+    let dirs = [".cardc_cache", ".cardc_cache/stages"];
+    for dir in &dirs {
+        let path = Path::new(dir);
+        if !path.exists() {
+            continue;
+        }
+
+        let mut files: Vec<(std::fs::DirEntry, std::time::SystemTime)> = Vec::new();
+        if let Ok(entries) = std::fs::read_dir(path) {
+            for entry in entries.filter_map(|e| e.ok()) {
+                let file_name = entry.file_name();
+                let name = file_name.to_string_lossy();
+                if !name.ends_with(".json") && !name.ends_with(".cache.json") {
+                    continue;
+                }
+                if let Ok(meta) = entry.metadata() {
+                    if meta.is_file() {
+                        let mtime = meta.modified().unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+                        if mtime < cutoff {
+                            if let Err(e) = std::fs::remove_file(entry.path()) {
+                                eprintln!("  ⚠ 缓存清理失败: {} — {}", entry.path().display(), e);
+                            }
+                        } else {
+                            files.push((entry, mtime));
+                        }
+                    }
+                }
+            }
+        }
+
+        // 若剩余文件数仍超过上限，按修改时间排序删除最旧的
+        if files.len() > MAX_FILES {
+            files.sort_by(|a, b| a.1.cmp(&b.1));
+            let to_remove = files.len() - MAX_FILES;
+            for (entry, _) in files.into_iter().take(to_remove) {
+                if let Err(e) = std::fs::remove_file(entry.path()) {
+                    eprintln!("  ⚠ 缓存清理失败: {} — {}", entry.path().display(), e);
+                }
+            }
+        }
+    }
+}
+
 /// 编译上下文（可 Clone，用于并行任务）
 #[derive(Clone, Debug)]
 struct CompileContext {
@@ -349,6 +400,9 @@ impl Pipeline {
             .map(|v| v != "1" && v != "true")
             .unwrap_or(true);
 
+        // 启动时清理过期缓存
+        cleanup_cache_dir();
+
         Self {
             ctx: CompileContext {
                 client: Arc::new(client),
@@ -435,13 +489,14 @@ impl Pipeline {
 
         let mut diagnostics = CompilationDiagnostics::default();
         let ctx = &self.ctx;
+        let load_prompt = |name: &str| ctx.load_prompt(name);
 
         // 摘要阶段（含缓存）
         let summary = if let Some(cached) = ctx.try_load_stage::<Summary>("summary", document, "summary") {
             println!("  💾 摘要缓存命中");
             cached
         } else {
-            match generate_summary(document, ctx, &|name| ctx.load_prompt(name)).await {
+            match with_retry("摘要", || generate_summary(document, ctx, &load_prompt)).await {
                 Ok(s) => {
                     println!("  ✓ 摘要完成");
                     ctx.save_stage("summary", document, "summary", &s);
@@ -453,7 +508,7 @@ impl Pipeline {
                     diagnostics.failures.push(StageFail {
                         stage: "summary".to_string(),
                         error: err_msg,
-                        retry_count: 0,
+                        retry_count: 3,
                         final_status: "failed".to_string(),
                     });
                     Summary::default()
@@ -466,7 +521,7 @@ impl Pipeline {
             println!("  💾 实体缓存命中 — {} 个实体", cached.len());
             cached
         } else {
-            match extract_entities(document, ctx, ctx, &|name| ctx.load_prompt(name)).await {
+            match with_retry("实体", || extract_entities(document, ctx, ctx, &load_prompt)).await {
                 Ok(e) => {
                     println!("  ✓ 标注完成 — 识别 {} 个实体", e.len());
                     ctx.save_stage("entities", document, "entity_extraction", &e);
@@ -478,7 +533,7 @@ impl Pipeline {
                     diagnostics.failures.push(StageFail {
                         stage: "entities".to_string(),
                         error: err_msg,
-                        retry_count: 0,
+                        retry_count: 3,
                         final_status: "failed".to_string(),
                     });
                     Vec::new()
@@ -487,31 +542,34 @@ impl Pipeline {
         };
 
         // 卡片阶段
-        let cards =
-            match generate_cards(document, doc_type, ctx, &|name| ctx.load_prompt(name)).await {
-                Ok(c) => {
-                    println!("  ✓ 卡片完成 — 生成 {} 张卡片", c.len());
-                    c
-                }
-                Err(e) => {
-                    let err_msg = format!("{}", e);
-                    println!("  ✗ 卡片生成失败: {}", err_msg);
-                    diagnostics.failures.push(StageFail {
-                        stage: "cards".to_string(),
-                        error: err_msg,
-                        retry_count: 0,
-                        final_status: "failed".to_string(),
-                    });
-                    Vec::new()
-                }
-            };
+        let cards = match with_retry("卡片", || {
+            generate_cards(document, doc_type, ctx, &load_prompt)
+        }).await {
+            Ok(c) => {
+                println!("  ✓ 卡片完成 — 生成 {} 张卡片", c.len());
+                c
+            }
+            Err(e) => {
+                let err_msg = format!("{}", e);
+                println!("  ✗ 卡片生成失败: {}", err_msg);
+                diagnostics.failures.push(StageFail {
+                    stage: "cards".to_string(),
+                    error: err_msg,
+                    retry_count: 3,
+                    final_status: "failed".to_string(),
+                });
+                Vec::new()
+            }
+        };
 
         // 图谱阶段（含缓存）
         let graph = if let Some(cached) = ctx.try_load_stage::<KnowledgeGraph>("graph", document, "relation_graph") {
             println!("  💾 图谱缓存命中 — {} 条关系", cached.relations.len());
             cached
         } else {
-            match build_graph(document, &entities, ctx, ctx, &|name| ctx.load_prompt(name)).await {
+            match with_retry("图谱", || {
+                build_graph(document, &entities, ctx, ctx, &load_prompt)
+            }).await {
                 Ok(g) => {
                     println!("  ✓ 图谱完成 — {} 条关系", g.relations.len());
                     ctx.save_stage("graph", document, "relation_graph", &g);
@@ -523,7 +581,7 @@ impl Pipeline {
                     diagnostics.failures.push(StageFail {
                         stage: "graph".to_string(),
                         error: err_msg,
-                        retry_count: 0,
+                        retry_count: 3,
                         final_status: "failed".to_string(),
                     });
                     KnowledgeGraph {
@@ -926,6 +984,35 @@ impl Pipeline {
     }
 }
 
+/// 辅助函数：带重试的执行（3次重试 + 指数退避）
+async fn with_retry<T, F, Fut>(name: &str, f: F) -> Result<T>
+where
+    F: Fn() -> Fut,
+    Fut: std::future::Future<Output = Result<T>>,
+{
+    let max_retries = 3;
+    let mut last_err = None;
+    for attempt in 1..=max_retries {
+        match f().await {
+            Ok(result) => return Ok(result),
+            Err(e) => {
+                let msg = format!("{}: {}", name, e);
+                eprintln!(
+                    "    ⚠ {} 失败 (尝试 {}/{}): {}",
+                    name, attempt, max_retries, msg
+                );
+                last_err = Some(e);
+                if attempt < max_retries {
+                    let delay = std::time::Duration::from_secs(2u64.pow(attempt as u32));
+                    tokio::time::sleep(delay).await;
+                }
+            }
+        }
+    }
+    Err(last_err
+        .unwrap_or_else(|| crate::error::AppError::TaskPanic(format!("{} 全部重试失败", name))))
+}
+
 async fn compile_chunk(
     ctx: CompileContext,
     document: String,
@@ -934,35 +1021,6 @@ async fn compile_chunk(
 ) -> Result<ChunkResult> {
     let ctx_ref = &ctx;
     let load_prompt = |name: &str| ctx_ref.load_prompt(name);
-
-    // 辅助函数：带重试的执行（3次重试 + 指数退避）
-    async fn with_retry<T, F, Fut>(name: &str, f: F) -> Result<T>
-    where
-        F: Fn() -> Fut,
-        Fut: std::future::Future<Output = Result<T>>,
-    {
-        let max_retries = 3;
-        let mut last_err = None;
-        for attempt in 1..=max_retries {
-            match f().await {
-                Ok(result) => return Ok(result),
-                Err(e) => {
-                    let msg = format!("{}: {}", name, e);
-                    eprintln!(
-                        "    ⚠ {} 失败 (尝试 {}/{}): {}",
-                        name, attempt, max_retries, msg
-                    );
-                    last_err = Some(e);
-                    if attempt < max_retries {
-                        let delay = std::time::Duration::from_secs(2u64.pow(attempt as u32));
-                        tokio::time::sleep(delay).await;
-                    }
-                }
-            }
-        }
-        Err(last_err
-            .unwrap_or_else(|| crate::error::AppError::TaskPanic(format!("{} 全部重试失败", name))))
-    }
 
     // summary 和 entities 互不依赖，并行执行
     // cards 和 graph 串行（graph 依赖 entities 结果）

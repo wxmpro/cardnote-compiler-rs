@@ -153,16 +153,55 @@ impl ProviderRegistry {
     }
 
     /// [H7] 优先从外部配置文件加载提供商，避免新增需重编译
+    ///
+    /// 加载策略：
+    /// 1. 先加载默认配置（从 ~/.config/cardnote/providers.default.json 或内置硬编码）
+    /// 2. 再加载用户覆盖配置（从 ~/.config/cardnote/providers.json 或 ./providers.json）
+    /// 3. 用户配置中的 Provider 会覆盖默认配置中的同名 Provider
     fn register_all(&mut self) {
-        let loaded = self.load_from_config_file();
-        if !loaded {
+        // 第一步：加载默认配置
+        let default_loaded = self.load_default_config();
+        if !default_loaded {
             self.register_builtin();
         }
+
+        // 第二步：加载用户覆盖配置
+        self.load_user_override_config();
     }
 
-    /// 从配置文件加载提供商列表
+    /// 加载默认 Provider 配置
+    /// 搜索路径：~/.config/cardnote/providers.default.json
+    /// 若不存在，导出内置配置到该路径后加载
+    fn load_default_config(&mut self) -> bool {
+        let default_path = shellexpand::tilde("~/.config/cardnote/providers.default.json").to_string();
+        let path = std::path::Path::new(&default_path);
+
+        // 若默认配置文件不存在，导出内置配置
+        if !path.exists() {
+            let config_dir = path.parent().unwrap();
+            if std::fs::create_dir_all(config_dir).is_ok() {
+                let default_json = Self::export_builtin_config();
+                if std::fs::write(path, default_json).is_ok() {
+                    eprintln!("  💾 默认 Provider 配置已导出到: {}", default_path);
+                }
+            }
+        }
+
+        if let Ok(content) = std::fs::read_to_string(path) {
+            if let Ok(providers) = serde_json::from_str::<Vec<Provider>>(&content) {
+                for p in providers {
+                    self.register(p);
+                }
+                return !self.providers.is_empty();
+            }
+        }
+        false
+    }
+
+    /// 加载用户覆盖配置
     /// 搜索路径：~/.config/cardnote/providers.json → ./providers.json
-    fn load_from_config_file(&mut self) -> bool {
+    /// 用户配置中的 Provider 会覆盖默认配置中的同名 Provider
+    fn load_user_override_config(&mut self) {
         let paths = [
             shellexpand::tilde("~/.config/cardnote/providers.json").to_string(),
             "providers.json".to_string(),
@@ -171,13 +210,12 @@ impl ProviderRegistry {
             if let Ok(content) = std::fs::read_to_string(path) {
                 if let Ok(providers) = serde_json::from_str::<Vec<Provider>>(&content) {
                     for p in providers {
-                        self.register(p);
+                        self.register(p); // 覆盖同名 Provider
                     }
-                    return !self.providers.is_empty();
+                    return;
                 }
             }
         }
-        false
     }
 
     /// 导出默认内置配置为 JSON 字符串

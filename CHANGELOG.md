@@ -2,6 +2,37 @@
 
 All notable changes to cardnote-compiler-rs are documented here.
 
+## [0.1.23] - 2026-05-31
+
+### Added
+
+- **Stage 层重试（单轮编译）** (`pipeline.rs`)
+  - `with_retry` 从编译块局部函数提升为模块级函数
+  - `run_single` 中 summary/entities/cards/graph 四个阶段均获 3 次重试 + 指数退避
+  - `diagnostics.StageFail.retry_count` 设为 3
+
+- **集成测试** (`tests/integration_test.rs`)
+  - Mock LLM 客户端实现 `ChatFn` / `ChatJsonFn` trait
+  - 空结果健康检查测试
+  - 加粗格式字段提取已知限制测试（3 个测试）
+
+- **Provider 配置外部化** (`providers.rs`)
+  - 首次运行时自动导出内置配置到 `~/.config/cardnote/providers.default.json`
+  - 支持三层加载：内置默认 → 默认配置 → 用户覆盖
+  - 用户只需在 `providers.json` 中写入需覆盖的 Provider
+
+### Changed
+- **Cargo.toml**：版本号 `0.1.22` → `0.1.23`
+
+---
+
+- **缓存文件夹自动清理** (`pipeline.rs`)
+  - 每次启动自动删除 30 天前的缓存文件
+  - 若文件数超过 200 自动删除最旧的
+
+- **`handle_compile` 拆分** (`main.rs`)
+  - `resolve_book_title()` 提取为独立函数
+
 ## [0.1.22] - 2026-05-31
 
 ### Fixed
