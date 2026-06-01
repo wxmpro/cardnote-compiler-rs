@@ -14,12 +14,13 @@ use crate::config::get_provider_config;
 use crate::error::{AppError, Result};
 use crate::models::{LlmMessage, LlmRequest, LlmUsage, ResponseFormat};
 use crate::providers::ProviderRegistry;
+use crate::rate_limiter::RateLimiter;
 
 /// 默认请求超时(秒)
 const DEFAULT_TIMEOUT_SECS: u64 = 120;
 
-/// LLM 客户端（支持模型自动回退 + Token 用量追踪 + 多协议 JSON）
-#[derive(Debug, Clone)]
+/// LLM 客户端（支持模型自动回退 + Token 用量追踪 + 多协议 JSON + RPM 限流）
+#[derive(Clone, Debug)]
 pub struct LlmClient {
     client: Client,
     api_key: String,
@@ -34,6 +35,8 @@ pub struct LlmClient {
     current_model_idx: Arc<AtomicUsize>,
     /// 累积的 LLM 调用用量统计
     usage_log: Arc<Mutex<Vec<LlmUsage>>>,
+    /// RPM 限流器（未配置 CARDNOTE_MAX_RPM 时为 None）
+    rate_limiter: Option<Arc<tokio::sync::Mutex<RateLimiter>>>,
 }
 
 impl LlmClient {
@@ -48,6 +51,9 @@ impl LlmClient {
             .timeout(Duration::from_secs(DEFAULT_TIMEOUT_SECS))
             .build()
             .map_err(|e| AppError::Api(format!("HTTP 客户端构建失败: {}", e)))?;
+        let rate_limiter = crate::config::max_rpm()
+            .map(|rpm| Arc::new(tokio::sync::Mutex::new(RateLimiter::new(rpm))));
+
         Ok(Self {
             client,
             api_key,
@@ -57,6 +63,7 @@ impl LlmClient {
             fallback_models,
             current_model_idx: Arc::new(AtomicUsize::new(0)),
             usage_log: Arc::new(Mutex::new(Vec::new())),
+            rate_limiter,
         })
     }
 
@@ -103,7 +110,7 @@ impl LlmClient {
         self.current_model_idx.store(0, Ordering::Relaxed);
     }
 
-    /// 创建使用指定模型的临时 client（共享 HTTP 连接池和用量统计）
+    /// 创建使用指定模型的临时 client（共享 HTTP 连接池、用量统计和限流器）
     pub fn with_model(&self, model: &str) -> Self {
         Self {
             client: self.client.clone(),
@@ -114,6 +121,7 @@ impl LlmClient {
             fallback_models: self.fallback_models.clone(),
             current_model_idx: Arc::new(AtomicUsize::new(0)),
             usage_log: self.usage_log.clone(),
+            rate_limiter: self.rate_limiter.clone(),
         }
     }
 
@@ -359,6 +367,11 @@ impl LlmClient {
 
     /// 发送 HTTP 请求（内部自动记录 Token 用量和延迟）
     async fn send_request(&self, request: LlmRequest) -> Result<Value> {
+        // RPM 限流（如果配置了 CARDNOTE_MAX_RPM）
+        if let Some(ref limiter) = self.rate_limiter {
+            limiter.lock().await.acquire().await;
+        }
+
         let url = format!("{}/chat/completions", self.base_url.trim_end_matches('/'));
 
         let start = std::time::Instant::now();

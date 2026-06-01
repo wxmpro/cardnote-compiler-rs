@@ -1,6 +1,6 @@
 [package]
 name = "cardnote_compiler"
-version = "0.1.26"
+version = "0.1.32"
 edition = "2024"
 description = "CardNote Compiler — 把文档编译成知识卡片 (Rust 重构版)"
 authors = ["Xinmin"]
@@ -56,5 +56,8 @@ lopdf = "0.36"
 
 # UUID 生成（v7：时间排序 + 无碰撞）
 uuid = { version = "1.11", features = ["v7"] }
+
+# TOML 解析（密度标记词配置）
+toml = "0.8"
 
 [dev-dependencies]

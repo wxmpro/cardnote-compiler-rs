@@ -11,5 +11,6 @@ pub mod output;
 pub mod pipeline;
 pub mod providers;
 pub mod quality;
+pub mod rate_limiter;
 pub mod scan;
 pub mod stages;

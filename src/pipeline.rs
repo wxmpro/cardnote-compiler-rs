@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, LazyLock};
+use std::sync::{Arc, LazyLock, OnceLock};
 
 use regex::Regex;
 use serde::{Deserialize, Serialize};
@@ -141,21 +141,6 @@ impl StageCache {
     const CACHE_DIR: &'static str = ".cardc_cache/stages";
     const VERSION: &'static str = "v1";
 
-    /// 计算缓存 key
-    fn cache_key(stage: &str, document: &str, prompt: &str, model: &str) -> String {
-        let doc_hash = Self::fnv1a_hash(document);
-        let prompt_hash = Self::fnv1a_hash(prompt);
-        let combined = format!(
-            "{}|{}|{}|{}|{}",
-            Self::VERSION,
-            stage,
-            doc_hash,
-            prompt_hash,
-            model
-        );
-        Self::fnv1a_hash(&combined)
-    }
-
     /// FNV-1a 哈希
     fn fnv1a_hash(data: &str) -> String {
         let mut hash: u64 = 0xcbf29ce484222325;
@@ -173,14 +158,23 @@ impl StageCache {
         dir.join(format!("{}_{}.json", stage, key))
     }
 
-    /// 加载缓存
-    fn load<T: serde::de::DeserializeOwned>(
+    /// 用预计算的文档哈希加载缓存（避免重复哈希文档）
+    fn load_with_hash<T: serde::de::DeserializeOwned>(
         stage: &str,
-        document: &str,
+        doc_hash: &str,
         prompt: &str,
         model: &str,
     ) -> Option<T> {
-        let key = Self::cache_key(stage, document, prompt, model);
+        let prompt_hash = Self::fnv1a_hash(prompt);
+        let combined = format!(
+            "{}|{}|{}|{}|{}",
+            Self::VERSION,
+            stage,
+            doc_hash,
+            prompt_hash,
+            model
+        );
+        let key = Self::fnv1a_hash(&combined);
         let path = Self::cache_path(stage, &key);
         if !path.exists() {
             return None;
@@ -189,15 +183,24 @@ impl StageCache {
         serde_json::from_str(&content).ok()
     }
 
-    /// 保存缓存
-    fn save<T: serde::Serialize>(
+    /// 用预计算的文档哈希保存缓存
+    fn save_with_hash<T: serde::Serialize>(
         stage: &str,
-        document: &str,
+        doc_hash: &str,
         prompt: &str,
         model: &str,
         value: &T,
     ) {
-        let key = Self::cache_key(stage, document, prompt, model);
+        let prompt_hash = Self::fnv1a_hash(prompt);
+        let combined = format!(
+            "{}|{}|{}|{}|{}",
+            Self::VERSION,
+            stage,
+            doc_hash,
+            prompt_hash,
+            model
+        );
+        let key = Self::fnv1a_hash(&combined);
         let path = Self::cache_path(stage, &key);
         if let Ok(json) = serde_json::to_string_pretty(value) {
             std::fs::write(&path, json).ok();
@@ -264,6 +267,8 @@ struct CompileContext {
     #[allow(dead_code)]
     stage_models: Arc<HashMap<String, String>>,
     stage_cache_enabled: bool,
+    /// 文档哈希缓存，同一文档多次 stage 只算一次 FNV-1a
+    document_hash: Arc<OnceLock<String>>,
 }
 
 impl CompileContext {
@@ -288,7 +293,6 @@ impl CompileContext {
     }
 
     /// 获取指定阶段的专用 client（支持 Tiered 模型）
-    /// 如果该阶段未配置独立模型，返回当前 client
     #[allow(dead_code)]
     fn client_for_stage(&self, stage: &str) -> LlmClient {
         if let Some(model) = self.stage_models.get(stage) {
@@ -298,7 +302,19 @@ impl CompileContext {
         }
     }
 
-    /// 尝试加载阶段缓存
+    /// 获取文档哈希（首次计算，后续从缓存返回）
+    fn get_doc_hash(&self, document: &str) -> &str {
+        self.document_hash.get_or_init(|| {
+            let mut hash: u64 = 0xcbf29ce484222325;
+            for byte in document.bytes() {
+                hash ^= byte as u64;
+                hash = hash.wrapping_mul(0x100000001b3);
+            }
+            format!("{:x}", hash)
+        })
+    }
+
+    /// 尝试加载阶段缓存（使用缓存的文档哈希）
     fn try_load_stage<T: serde::de::DeserializeOwned>(
         &self,
         stage: &str,
@@ -308,12 +324,13 @@ impl CompileContext {
         if !self.stage_cache_enabled {
             return None;
         }
+        let doc_hash = self.get_doc_hash(document).to_string();
         let prompt = self.prompts.get(prompt_name).cloned().unwrap_or_default();
         let model = self.client.model.clone();
-        StageCache::load(stage, document, &prompt, &model)
+        StageCache::load_with_hash(stage, &doc_hash, &prompt, &model)
     }
 
-    /// 保存阶段缓存
+    /// 保存阶段缓存（使用缓存的文档哈希）
     fn save_stage<T: serde::Serialize>(
         &self,
         stage: &str,
@@ -324,9 +341,10 @@ impl CompileContext {
         if !self.stage_cache_enabled {
             return;
         }
+        let doc_hash = self.get_doc_hash(document).to_string();
         let prompt = self.prompts.get(prompt_name).cloned().unwrap_or_default();
         let model = self.client.model.clone();
-        StageCache::save(stage, document, &prompt, &model, value);
+        StageCache::save_with_hash(stage, &doc_hash, &prompt, &model, value);
     }
 }
 
@@ -418,6 +436,7 @@ impl Pipeline {
                 prompts: Arc::new(prompts),
                 stage_models: Arc::new(stage_model_map),
                 stage_cache_enabled,
+                document_hash: Arc::new(OnceLock::new()),
             },
         }
     }

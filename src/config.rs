@@ -704,3 +704,282 @@ pub fn known_book_names() -> Vec<String> {
         })
         .collect()
 }
+
+// ═══════════════════════════════════════════════════════
+//  密度标记词配置（运行时从 .cardnote/density_markers.toml 加载）
+// ═══════════════════════════════════════════════════════
+
+/// 信息密度标记词分类（权重用于 compute_info_density）
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct DensityMarkers {
+    /// 权重 2.0：学术/专业术语
+    #[serde(default)]
+    pub academic_terms: Vec<String>,
+    /// 权重 1.5：引用/来源标记
+    #[serde(default)]
+    pub citation_terms: Vec<String>,
+    /// 权重 1.5：量化/数据标记
+    #[serde(default)]
+    pub quantifiers: Vec<String>,
+    /// 权重 1.0：逻辑连接词
+    #[serde(default)]
+    pub logic_connectors: Vec<String>,
+    /// 权重 0.5：结构化标记
+    #[serde(default)]
+    pub structure_markers: Vec<String>,
+}
+
+impl Default for DensityMarkers {
+    fn default() -> Self {
+        Self {
+            academic_terms: vec![
+                "研究发现".into(),
+                "研究表明".into(),
+                "实验证明".into(),
+                "实验表明".into(),
+                "理论".into(),
+                "模型".into(),
+                "框架".into(),
+                "机制".into(),
+                "原理".into(),
+                "规律".into(),
+                "概念".into(),
+                "定义".into(),
+                "术语".into(),
+                "范式".into(),
+                "假设".into(),
+                "推论".into(),
+                "认知".into(),
+                "心理".into(),
+                "神经".into(),
+                "行为".into(),
+                "情绪".into(),
+                "动机".into(),
+                "结构".into(),
+                "系统".into(),
+                "模式".into(),
+                "流程".into(),
+                "算法".into(),
+                "函数".into(),
+            ],
+            citation_terms: vec![
+                "提出".into(),
+                "指出".into(),
+                "认为".into(),
+                "主张".into(),
+                "强调".into(),
+                "总结".into(),
+                "引用".into(),
+                "借鉴".into(),
+                "参考".into(),
+                "依据".into(),
+                "根据".into(),
+                "基于".into(),
+            ],
+            quantifiers: vec![
+                "数据".into(),
+                "证据".into(),
+                "统计".into(),
+                "调查".into(),
+                "百分比".into(),
+                "比例".into(),
+                "数量".into(),
+                "数值".into(),
+                "指标".into(),
+                "维度".into(),
+                "程度".into(),
+                "水平".into(),
+                "大约".into(),
+                "约".into(),
+                "超过".into(),
+                "低于".into(),
+                "达到".into(),
+                "增至".into(),
+            ],
+            logic_connectors: vec![
+                "比如".into(),
+                "例如".into(),
+                "如".into(),
+                "像".into(),
+                "譬如".into(),
+                "首先".into(),
+                "其次".into(),
+                "再次".into(),
+                "最后".into(),
+                "第一".into(),
+                "第二".into(),
+                "第三".into(),
+                "因此".into(),
+                "所以".into(),
+                "因而".into(),
+                "从而".into(),
+                "于是".into(),
+                "然而".into(),
+                "但是".into(),
+                "不过".into(),
+                "却".into(),
+                "而".into(),
+                "反而".into(),
+                "虽然".into(),
+                "尽管".into(),
+                "即使".into(),
+                "纵然".into(),
+                "如果".into(),
+                "假设".into(),
+                "若".into(),
+                "只要".into(),
+                "只有".into(),
+                "那么".into(),
+                "则".into(),
+                "不仅".into(),
+                "不但".into(),
+                "而且".into(),
+                "并且".into(),
+                "同时".into(),
+                "此外".into(),
+                "另外".into(),
+                "因为".into(),
+                "由于".into(),
+                "鉴于".into(),
+                "考虑到".into(),
+                "不同于".into(),
+                "相较于".into(),
+                "相比".into(),
+                "相对".into(),
+                "相反".into(),
+                "反之".into(),
+                "分为".into(),
+                "包括".into(),
+                "涵盖".into(),
+                "包含".into(),
+                "涉及".into(),
+                "关于".into(),
+                "通过".into(),
+                "凭借".into(),
+                "利用".into(),
+                "采用".into(),
+                "运用".into(),
+                "使用".into(),
+                "导致".into(),
+                "造成".into(),
+                "引起".into(),
+                "引发".into(),
+                "产生".into(),
+                "带来".into(),
+                "影响".into(),
+                "作用".into(),
+                "效果".into(),
+                "结果".into(),
+                "后果".into(),
+                "成果".into(),
+                "区别".into(),
+                "差异".into(),
+                "区分".into(),
+                "辨别".into(),
+                "识别".into(),
+                "比较".into(),
+                "对比".into(),
+                "对照".into(),
+                "类比".into(),
+                "关键".into(),
+                "核心".into(),
+                "本质".into(),
+                "实质".into(),
+                "根本".into(),
+                "重点".into(),
+                "要点".into(),
+                "原因".into(),
+                "理由".into(),
+                "根源".into(),
+                "由来".into(),
+                "起因".into(),
+                "目的".into(),
+                "目标".into(),
+                "意图".into(),
+                "旨在".into(),
+                "为了".into(),
+                "意义".into(),
+                "价值".into(),
+                "重要性".into(),
+                "作用".into(),
+                "方法".into(),
+                "方式".into(),
+                "途径".into(),
+                "手段".into(),
+                "策略".into(),
+                "技巧".into(),
+                "步骤".into(),
+                "分析".into(),
+                "解析".into(),
+                "剖析".into(),
+                "解读".into(),
+                "阐释".into(),
+                "阐明".into(),
+                "论述".into(),
+                "论证".into(),
+                "总结".into(),
+                "归纳".into(),
+                "概括".into(),
+                "综述".into(),
+                "回顾".into(),
+                "梳理".into(),
+                "具体".into(),
+                "详细".into(),
+                "明确".into(),
+                "清晰".into(),
+                "确切".into(),
+                "明确".into(),
+                "实例".into(),
+                "案例".into(),
+                "事例".into(),
+                "例子".into(),
+                "样板".into(),
+                "典型".into(),
+            ],
+            structure_markers: vec![
+                "：".into(),
+                ":".into(),
+                "1.".into(),
+                "2.".into(),
+                "3.".into(),
+                "4.".into(),
+                "5.".into(),
+                "一、".into(),
+                "二、".into(),
+                "三、".into(),
+                "四、".into(),
+                "五、".into(),
+                "（1）".into(),
+                "（2）".into(),
+                "（3）".into(),
+                "①".into(),
+                "②".into(),
+                "③".into(),
+            ],
+        }
+    }
+}
+
+static DENSITY_MARKERS: std::sync::LazyLock<DensityMarkers> =
+    std::sync::LazyLock::new(|| load_density_markers().unwrap_or_default());
+
+fn load_density_markers() -> std::result::Result<DensityMarkers, String> {
+    let path = std::path::Path::new(".cardnote/density_markers.toml");
+    if path.exists() {
+        let content = std::fs::read_to_string(path).map_err(|e| format!("读取失败: {}", e))?;
+        toml::from_str(&content).map_err(|e| format!("解析失败: {}", e))
+    } else {
+        Ok(DensityMarkers::default())
+    }
+}
+
+pub fn density_markers() -> &'static DensityMarkers {
+    &DENSITY_MARKERS
+}
+
+/// 读取 RPM 限流配置（未设置时返回 None，不限流）
+pub fn max_rpm() -> Option<u32> {
+    std::env::var("CARDNOTE_MAX_RPM")
+        .ok()
+        .and_then(|s| s.parse().ok())
+}
