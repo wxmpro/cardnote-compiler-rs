@@ -1,4 +1,7 @@
-use std::sync::{Arc, atomic::{AtomicUsize, Ordering}};
+use std::sync::{
+    Arc,
+    atomic::{AtomicUsize, Ordering},
+};
 use std::time::Duration;
 
 use colored::Colorize;
@@ -190,7 +193,8 @@ impl LlmClient {
         // 按 Provider 协议选择 JSON mode 策略
         // OpenAI 兼容协议：使用 response_format: json_object
         // Anthropic / Gemini / Cohere：仅依赖 system prompt 要求 JSON，不使用 response_format
-        let use_json_object = !matches!(self.provider_id.as_str(), "anthropic" | "google" | "cohere");
+        let use_json_object =
+            !matches!(self.provider_id.as_str(), "anthropic" | "google" | "cohere");
         let request = LlmRequest {
             model: model.to_string(),
             messages: modified_messages,
@@ -208,7 +212,22 @@ impl LlmClient {
             match self.send_request(request.clone()).await {
                 Ok(response) => match self.extract_content(&response) {
                     Ok(content) => match serde_json::from_str::<Value>(&content) {
-                        Ok(json) => return Ok(json),
+                        Ok(json) => {
+                            // 检查是否为空对象或无 title 字段
+                            if json.as_object().is_some_and(|o| o.is_empty()) {
+                                let msg = "JSON 返回空对象 {}".to_string();
+                                eprintln!("    ⚠ JSON 验证失败 (尝试 {}/3): {}", attempt, msg);
+                                last_error = Some(AppError::JsonParse(msg));
+                            } else if json.get("title").is_none()
+                                && json.as_array().is_some_and(|a| a.is_empty())
+                            {
+                                let msg = "JSON 返回缺少 title 字段且为空数组".to_string();
+                                eprintln!("    ⚠ JSON 验证失败 (尝试 {}/3): {}", attempt, msg);
+                                last_error = Some(AppError::JsonParse(msg));
+                            } else {
+                                return Ok(json);
+                            }
+                        }
                         Err(e) => {
                             let msg = format!("content JSON 解析失败: {}", e);
                             eprintln!("    ⚠ JSON 解析失败 (尝试 {}/3): {}", attempt, msg);
@@ -269,17 +288,27 @@ impl LlmClient {
         if let Some(u) = usage {
             // OpenAI / DeepSeek 格式: prompt_tokens / completion_tokens / total_tokens
             prompt_tokens = u.get("prompt_tokens").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
-            completion_tokens = u.get("completion_tokens").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+            completion_tokens = u
+                .get("completion_tokens")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0) as u32;
             total_tokens = u.get("total_tokens").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
             // Anthropic 格式: input_tokens / output_tokens
             if prompt_tokens == 0 {
                 prompt_tokens = u.get("input_tokens").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
-                completion_tokens = u.get("output_tokens").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+                completion_tokens =
+                    u.get("output_tokens").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
                 total_tokens = prompt_tokens + completion_tokens;
             }
             // Anthropic 缓存字段
-            cached_tokens = u.get("cache_read_input_tokens").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
-            cache_creation_tokens = u.get("cache_creation_input_tokens").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+            cached_tokens = u
+                .get("cache_read_input_tokens")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0) as u32;
+            cache_creation_tokens = u
+                .get("cache_creation_input_tokens")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0) as u32;
         }
 
         LlmUsage {
@@ -293,10 +322,22 @@ impl LlmClient {
         }
     }
 
-    /// 记录一次调用用量
+    /// 记录一次调用用量（内存 + 文件持久化）
     pub fn record_usage(&self, usage: LlmUsage) {
         if let Ok(mut log) = self.usage_log.lock() {
-            log.push(usage);
+            log.push(usage.clone());
+        }
+
+        // 持久化到文件（追加模式，JSON Lines）
+        if let Ok(json) = serde_json::to_string(&usage) {
+            let _ = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(".cardnote/usage.log")
+                .and_then(|mut f| {
+                    use std::io::Write;
+                    writeln!(f, "{}", json)
+                });
         }
     }
 
@@ -389,14 +430,15 @@ pub fn create_client(
     fallback_models.retain(|m| m != &effective_model);
 
     // 如果用户指定了模型且该模型不支持 JSON mode，给出提示
-    if let Some(ref user_model) = model {
-        if !registry.supports_json_mode(provider, user_model) && !fallback_models.is_empty() {
-            println!(
-                "  ⚠ 模型 {} 不支持 JSON mode，已配置 fallback: {}",
-                user_model.bright_yellow(),
-                fallback_models.join(", ").bright_cyan()
-            );
-        }
+    if let Some(ref user_model) = model
+        && !registry.supports_json_mode(provider, user_model)
+        && !fallback_models.is_empty()
+    {
+        println!(
+            "  ⚠ 模型 {} 不支持 JSON mode，已配置 fallback: {}",
+            user_model.bright_yellow(),
+            fallback_models.join(", ").bright_cyan()
+        );
     }
 
     LlmClient::new(

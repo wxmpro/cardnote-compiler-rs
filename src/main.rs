@@ -6,17 +6,37 @@ use colored::*;
 
 use cardnote_compiler::api::create_client;
 use cardnote_compiler::config::{find_env_file, get_api_config, get_provider_label};
-use cardnote_compiler::health::{check_all_providers, print_health_report, select_best};
-use cardnote_compiler::error::AppError;
 use cardnote_compiler::converter::{
-    convert_to_markdown_async, convert_to_markdown_async_with_timeout,
-    extract_pdf_metadata,
+    convert_to_markdown_async, convert_to_markdown_async_with_timeout, extract_pdf_metadata,
 };
 use cardnote_compiler::diagnostics;
+use cardnote_compiler::error::AppError;
+use cardnote_compiler::health::{check_all_providers, print_health_report, select_best};
 use cardnote_compiler::pipeline::Pipeline;
 use cardnote_compiler::quality;
 use cardnote_compiler::scan;
 use cardnote_compiler::scan::PdfStatus;
+
+/// 启动时清理超过 24 小时的残留临时目录
+fn cleanup_stale_temp_dirs() {
+    let temp_base = std::env::temp_dir();
+    let one_day_ago = std::time::SystemTime::now() - std::time::Duration::from_secs(86400);
+
+    if let Ok(entries) = std::fs::read_dir(&temp_base) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+            // tempfile crate 默认命名: .tmpXXXXXX
+            if (name.starts_with(".tmp") || name.starts_with("cardnote_"))
+                && let Ok(metadata) = entry.metadata()
+                && let Ok(modified) = metadata.modified()
+                && modified < one_day_ago
+            {
+                let _ = std::fs::remove_dir_all(&path);
+            }
+        }
+    }
+}
 
 #[derive(Parser)]
 #[command(name = "cardc")]
@@ -52,7 +72,6 @@ struct Cli {
     /// 低质量输入仍强制继续编译
     #[arg(long)]
     force: bool,
-
 }
 
 #[derive(Subcommand)]
@@ -105,6 +124,9 @@ enum Commands {
 
 #[tokio::main]
 async fn main() {
+    // 启动时清理残留临时目录
+    cleanup_stale_temp_dirs();
+
     if let Err(e) = run().await {
         eprintln!("{} {}", "错误:".red().bold(), e);
         std::process::exit(1);
@@ -158,12 +180,8 @@ async fn run() -> cardnote_compiler::error::Result<()> {
         Some(Commands::Annotate { file }) => {
             handle_phase("annotate", &file, "./output", args).await
         }
-        Some(Commands::Cards { file, output }) => {
-            handle_phase("cards", &file, &output, args).await
-        }
-        Some(Commands::Graph { file }) => {
-            handle_phase("graph", &file, "./output", args).await
-        }
+        Some(Commands::Cards { file, output }) => handle_phase("cards", &file, &output, args).await,
+        Some(Commands::Graph { file }) => handle_phase("graph", &file, "./output", args).await,
         Some(Commands::Scan {
             dir,
             recursive,
@@ -231,9 +249,9 @@ fn resolve_book_title(file: &str, is_pdf: bool, summary_title: &str) -> String {
 
 // [H5] 主编译流程处理器（原 run() 中 None 分支的核心逻辑）
 async fn handle_compile(cli: Cli) -> cardnote_compiler::error::Result<()> {
-    let file = cli
-        .file
-        .ok_or_else(|| AppError::Config("请指定输入文件，或运行 cardc init / cardc doctor".to_string()))?;
+    let file = cli.file.ok_or_else(|| {
+        AppError::Config("请指定输入文件，或运行 cardc init / cardc doctor".to_string())
+    })?;
 
     // ── 自动 Provider 健康检测与选择 ──
     let (api_key, provider, model) = if cli.api_key.is_none() && cli.provider.is_none() {
@@ -249,8 +267,9 @@ async fn handle_compile(cli: Cli) -> cardnote_compiler::error::Result<()> {
                 format!("{}ms", health_results[0].latency_ms).bright_black()
             );
             let credentials = cardnote_compiler::providers::scan_credentials();
-            let cred = credentials.get(&best_provider_id)
-                .ok_or_else(|| AppError::Config(format!("最佳 Provider {} 凭据丢失", best_provider_id)))?;
+            let cred = credentials.get(&best_provider_id).ok_or_else(|| {
+                AppError::Config(format!("最佳 Provider {} 凭据丢失", best_provider_id))
+            })?;
             (cred.api_key.clone(), best_provider_id, Some(best_model))
         } else {
             println!("\n{} 没有可用的 Provider，启动交互式配置...", "⚠".yellow());
@@ -294,7 +313,10 @@ async fn handle_compile(cli: Cli) -> cardnote_compiler::error::Result<()> {
         .is_some_and(|ext| ext.eq_ignore_ascii_case("pdf"));
 
     let pdf_scan = if is_pdf {
-        Some(scan::inspect_pdf(path, 20).map_err(|e| AppError::TaskPanic(format!("PDF 探测失败: {}", e)))?)
+        Some(
+            scan::inspect_pdf(path, 20)
+                .map_err(|e| AppError::TaskPanic(format!("PDF 探测失败: {}", e)))?,
+        )
     } else {
         None
     };
@@ -367,12 +389,12 @@ async fn handle_compile(cli: Cli) -> cardnote_compiler::error::Result<()> {
         && result.summary.title.is_empty()
         && result.summary.overview.is_empty()
     {
-        println!(
-            "\n{} 编译结果为空（摘要和卡片均为空）。",
-            "⚠".yellow()
-        );
+        println!("\n{} 编译结果为空（摘要和卡片均为空）。", "⚠".yellow());
         if !result.diagnostics.failures.is_empty() {
-            println!("   检测到 {} 个阶段失败，请检查 compile_diagnostics.md 了解详情。", result.diagnostics.failures.len());
+            println!(
+                "   检测到 {} 个阶段失败，请检查 compile_diagnostics.md 了解详情。",
+                result.diagnostics.failures.len()
+            );
         } else {
             println!("   可能原因：LLM 输出全部为空，或卡片解析未匹配到任何有效内容。");
         }

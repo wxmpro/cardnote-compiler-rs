@@ -7,39 +7,26 @@ use crate::models::{Card, CardStatus, CardType};
 // [C2] 预编译正则表达式（避免每次 lint 重复编译）
 // ═══════════════════════════════════════════════════════
 
-static RE_REF_PAGE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"^(.+)_第(\d+)(?:-\d+)?页$").expect("硬编码正则")
-});
-static RE_BOOK_PAGE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"^本书第(\d+)页$").expect("硬编码正则")
-});
-static RE_CITE_P: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"^(.+)[,，]\s*p[\.．]?(\d+).*$").expect("硬编码正则")
-});
-static RE_P_DOT: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"^(.+)_p\.(\d+)$").expect("硬编码正则")
-});
-static RE_AUTHOR_BOOK: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"^阳志平《([^》]+)》").expect("硬编码正则")
-});
-static RE_AUTHOR_BOOK_FULL: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"^阳志平《([^》]+)》.*$").expect("硬编码正则")
-});
-static RE_AUTHOR_YEAR: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"^([^_]+)_\d{4}_.*$").expect("硬编码正则")
-});
-static RE_PAREN_BOOK: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"^([^（(]+)[（(].*[)）].*$").expect("硬编码正则")
-});
-static RE_EXTRACT_BOOK: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"《([^》]+)》").expect("硬编码正则")
-});
+static RE_REF_PAGE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^(.+)_第(\d+)(?:-\d+)?页$").expect("硬编码正则"));
+static RE_BOOK_PAGE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^本书第(\d+)页$").expect("硬编码正则"));
+static RE_CITE_P: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^(.+)[,，]\s*p[\.．]?(\d+).*$").expect("硬编码正则"));
+static RE_P_DOT: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^(.+)_p\.(\d+)$").expect("硬编码正则"));
+static RE_AUTHOR_BOOK: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^阳志平《([^》]+)》").expect("硬编码正则"));
+static RE_AUTHOR_BOOK_FULL: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^阳志平《([^》]+)》.*$").expect("硬编码正则"));
+static RE_AUTHOR_YEAR: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^([^_]+)_\d{4}_.*$").expect("硬编码正则"));
+static RE_PAREN_BOOK: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^([^（(]+)[（(].*[)）].*$").expect("硬编码正则"));
+static RE_EXTRACT_BOOK: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"《([^》]+)》").expect("硬编码正则"));
 
-// [M1] 已知书名列表（从硬编码提取为可维护常量）
-const KNOWN_BOOKS: &[&str] = &[
-    "人生模式",
-    "聪明的阅读者",
-];
+// [M1] 已知书名列表（运行时从 .cardnote/books.json 加载，不再硬编码）
 
 /// 卡片质量检查配置
 #[derive(Debug, Clone)]
@@ -59,7 +46,7 @@ impl Default for CardLintConfig {
         Self {
             min_content_length: 30,
             max_garbage_ratio: 0.3,
-            min_info_density: 0.05,  // v0.1.6: 从 0.1 放宽到 0.05，配合加权算法减少误报
+            min_info_density: 0.05, // v0.1.6: 从 0.1 放宽到 0.05，配合加权算法减少误报
             check_reference: true,
         }
     }
@@ -225,11 +212,35 @@ pub fn lint_card_with_source(
                     // 保留中英文文字、数字；过滤常见标点
                     !matches!(
                         c,
-                        ' ' | '\u{3000}' | '\u{3001}' | '\u{3002}' | '\u{FF0C}' | '\u{FF1A}'
-                            | '\u{FF1B}' | '\u{FF01}' | '\u{FF1F}' | '\u{201C}' | '\u{201D}'
-                            | '\u{2018}' | '\u{2019}' | '\u{FF08}' | '\u{FF09}' | '\u{300A}'
-                            | '\u{300B}' | '\u{3008}' | '\u{3009}' | '\u{00B7}' | '"' | '\''
-                            | '(' | ')' | '[' | ']' | '{' | '}' | '<' | '>'
+                        ' ' | '\u{3000}'
+                            | '\u{3001}'
+                            | '\u{3002}'
+                            | '\u{FF0C}'
+                            | '\u{FF1A}'
+                            | '\u{FF1B}'
+                            | '\u{FF01}'
+                            | '\u{FF1F}'
+                            | '\u{201C}'
+                            | '\u{201D}'
+                            | '\u{2018}'
+                            | '\u{2019}'
+                            | '\u{FF08}'
+                            | '\u{FF09}'
+                            | '\u{300A}'
+                            | '\u{300B}'
+                            | '\u{3008}'
+                            | '\u{3009}'
+                            | '\u{00B7}'
+                            | '"'
+                            | '\''
+                            | '('
+                            | ')'
+                            | '['
+                            | ']'
+                            | '{'
+                            | '}'
+                            | '<'
+                            | '>'
                     )
                 })
                 .collect();
@@ -261,6 +272,30 @@ pub fn lint_card_with_source(
     // 规则6.5: ref 格式检查
     // [v0.1.6] 强制要求 ref 符合 v3 格式规范：来源名_p页码
     check_ref_format(card, &mut issues);
+
+    // 规则6.8: 类型混淆检测 — 术语卡标题不能是卡片类型名称
+    if card.card_type == CardType::Term {
+        let forbidden_titles = [
+            "反常识卡",
+            "新知卡",
+            "术语卡",
+            "金句卡",
+            "综述卡",
+            "行动卡",
+            "人物卡",
+            "事件卡",
+            "图示卡",
+            "新词卡",
+            "基础卡",
+            "索引卡",
+        ];
+        for &ft in &forbidden_titles {
+            if card.title.contains(ft) {
+                issues.push(LintIssue::InvalidRefFormat); // 标记为类型混淆
+                break;
+            }
+        }
+    }
 
     // 规则7: 类型化结构检查
     check_typed_card_requirements(card, &mut issues);
@@ -425,11 +460,34 @@ fn compute_info_density(content: &str) -> f64 {
 
     // 权重 2.0：学术/专业术语（信息密度最高的标记）
     let academic_terms = [
-        "研究发现", "研究表明", "实验证明", "实验表明",
-        "理论", "模型", "框架", "机制", "原理", "规律",
-        "概念", "定义", "术语", "范式", "假设", "推论",
-        "认知", "心理", "神经", "行为", "情绪", "动机",
-        "结构", "系统", "模式", "流程", "算法", "函数",
+        "研究发现",
+        "研究表明",
+        "实验证明",
+        "实验表明",
+        "理论",
+        "模型",
+        "框架",
+        "机制",
+        "原理",
+        "规律",
+        "概念",
+        "定义",
+        "术语",
+        "范式",
+        "假设",
+        "推论",
+        "认知",
+        "心理",
+        "神经",
+        "行为",
+        "情绪",
+        "动机",
+        "结构",
+        "系统",
+        "模式",
+        "流程",
+        "算法",
+        "函数",
     ];
     for term in &academic_terms {
         score += content.matches(term).count() as f64 * 2.0;
@@ -437,8 +495,8 @@ fn compute_info_density(content: &str) -> f64 {
 
     // 权重 1.5：引用/来源标记（表明有外部知识支撑）
     let citation_terms = [
-        "提出", "指出", "认为", "主张", "强调", "总结",
-        "引用", "借鉴", "参考", "依据", "根据", "基于",
+        "提出", "指出", "认为", "主张", "强调", "总结", "引用", "借鉴", "参考", "依据", "根据",
+        "基于",
     ];
     for term in &citation_terms {
         score += content.matches(term).count() as f64 * 1.5;
@@ -451,9 +509,24 @@ fn compute_info_density(content: &str) -> f64 {
 
     // 权重 1.5：量化/数据标记（具体信息）
     let quantifiers = [
-        "数据", "证据", "统计", "调查", "百分比", "比例",
-        "数量", "数值", "指标", "维度", "程度", "水平",
-        "大约", "约", "超过", "低于", "达到", "增至",
+        "数据",
+        "证据",
+        "统计",
+        "调查",
+        "百分比",
+        "比例",
+        "数量",
+        "数值",
+        "指标",
+        "维度",
+        "程度",
+        "水平",
+        "大约",
+        "约",
+        "超过",
+        "低于",
+        "达到",
+        "增至",
     ];
     for q in &quantifiers {
         score += content.matches(q).count() as f64 * 1.5;
@@ -464,30 +537,144 @@ fn compute_info_density(content: &str) -> f64 {
 
     // 权重 1.0：逻辑连接词（论证结构）
     let logic_connectors = [
-        "比如", "例如", "如", "像", "譬如",
-        "首先", "其次", "再次", "最后", "第一", "第二", "第三",
-        "因此", "所以", "因而", "从而", "于是",
-        "然而", "但是", "不过", "却", "而", "反而",
-        "虽然", "尽管", "即使", "纵然",
-        "如果", "假设", "若", "只要", "只有", "那么", "则",
-        "不仅", "不但", "而且", "并且", "同时", "此外", "另外",
-        "因为", "由于", "鉴于", "考虑到",
-        "不同于", "相较于", "相比", "相对", "相反", "反之",
-        "分为", "包括", "涵盖", "包含", "涉及", "关于",
-        "通过", "凭借", "利用", "采用", "运用", "使用",
-        "导致", "造成", "引起", "引发", "产生", "带来",
-        "影响", "作用", "效果", "结果", "后果", "成果",
-        "区别", "差异", "区分", "辨别", "识别",
-        "比较", "对比", "对照", "类比",
-        "关键", "核心", "本质", "实质", "根本", "重点", "要点",
-        "原因", "理由", "根源", "由来", "起因",
-        "目的", "目标", "意图", "旨在", "为了",
-        "意义", "价值", "重要性", "作用",
-        "方法", "方式", "途径", "手段", "策略", "技巧", "步骤",
-        "分析", "解析", "剖析", "解读", "阐释", "阐明", "论述", "论证",
-        "总结", "归纳", "概括", "综述", "回顾", "梳理",
-        "具体", "详细", "明确", "清晰", "确切", "明确",
-        "实例", "案例", "事例", "例子", "样板", "典型",
+        "比如",
+        "例如",
+        "如",
+        "像",
+        "譬如",
+        "首先",
+        "其次",
+        "再次",
+        "最后",
+        "第一",
+        "第二",
+        "第三",
+        "因此",
+        "所以",
+        "因而",
+        "从而",
+        "于是",
+        "然而",
+        "但是",
+        "不过",
+        "却",
+        "而",
+        "反而",
+        "虽然",
+        "尽管",
+        "即使",
+        "纵然",
+        "如果",
+        "假设",
+        "若",
+        "只要",
+        "只有",
+        "那么",
+        "则",
+        "不仅",
+        "不但",
+        "而且",
+        "并且",
+        "同时",
+        "此外",
+        "另外",
+        "因为",
+        "由于",
+        "鉴于",
+        "考虑到",
+        "不同于",
+        "相较于",
+        "相比",
+        "相对",
+        "相反",
+        "反之",
+        "分为",
+        "包括",
+        "涵盖",
+        "包含",
+        "涉及",
+        "关于",
+        "通过",
+        "凭借",
+        "利用",
+        "采用",
+        "运用",
+        "使用",
+        "导致",
+        "造成",
+        "引起",
+        "引发",
+        "产生",
+        "带来",
+        "影响",
+        "作用",
+        "效果",
+        "结果",
+        "后果",
+        "成果",
+        "区别",
+        "差异",
+        "区分",
+        "辨别",
+        "识别",
+        "比较",
+        "对比",
+        "对照",
+        "类比",
+        "关键",
+        "核心",
+        "本质",
+        "实质",
+        "根本",
+        "重点",
+        "要点",
+        "原因",
+        "理由",
+        "根源",
+        "由来",
+        "起因",
+        "目的",
+        "目标",
+        "意图",
+        "旨在",
+        "为了",
+        "意义",
+        "价值",
+        "重要性",
+        "作用",
+        "方法",
+        "方式",
+        "途径",
+        "手段",
+        "策略",
+        "技巧",
+        "步骤",
+        "分析",
+        "解析",
+        "剖析",
+        "解读",
+        "阐释",
+        "阐明",
+        "论述",
+        "论证",
+        "总结",
+        "归纳",
+        "概括",
+        "综述",
+        "回顾",
+        "梳理",
+        "具体",
+        "详细",
+        "明确",
+        "清晰",
+        "确切",
+        "明确",
+        "实例",
+        "案例",
+        "事例",
+        "例子",
+        "样板",
+        "典型",
     ];
     for conn in &logic_connectors {
         score += content.matches(conn).count() as f64 * 1.0;
@@ -495,9 +682,8 @@ fn compute_info_density(content: &str) -> f64 {
 
     // 权重 0.5：结构化标记（列表、分层）
     let structure_markers = [
-        "：", ":", "1.", "2.", "3.", "4.", "5.",
-        "一、", "二、", "三、", "四、", "五、",
-        "（1）", "（2）", "（3）", "①", "②", "③",
+        "：", ":", "1.", "2.", "3.", "4.", "5.", "一、", "二、", "三、", "四、", "五、", "（1）",
+        "（2）", "（3）", "①", "②", "③",
     ];
     for m in &structure_markers {
         score += content.matches(m).count() as f64 * 0.5;
@@ -514,10 +700,9 @@ fn compute_info_density(content: &str) -> f64 {
 /// 3. 引用字段包含乱码字符 → ReferenceMismatch
 fn check_reference_consistency(card: &Card, issues: &mut Vec<LintIssue>) {
     // 规则1：金句卡引用完整性（仅检查金句卡）
-    if card.card_type == CardType::Quote {
-        if !card.original_text.is_empty() && card.source.is_empty() {
-            issues.push(LintIssue::ReferenceMismatch);
-        }
+    if card.card_type == CardType::Quote && !card.original_text.is_empty() && card.source.is_empty()
+    {
+        issues.push(LintIssue::ReferenceMismatch);
     }
 
     // 规则2：内容是否直接复制原文（金句卡豁免）
@@ -608,34 +793,37 @@ fn fix_ref_format(card: &mut Card, source_text: &str) {
     }
 
     // ── 规则6: 阳志平《书名》...（无 _p 后缀）→ 提取书名，尝试找页码 ──
-    if RE_AUTHOR_BOOK_FULL.is_match(&fixed) && !fixed.contains("_p") {
-        if let Some(caps) = RE_AUTHOR_BOOK_FULL.captures(&fixed) {
-            let book_name = caps.get(1).unwrap().as_str().trim();
-            // 尝试从文本中查找该书的引用页码
-            if let Some(page) = find_book_page_in_source(book_name, source_text) {
-                fixed = format!("{}_p{}", book_name, page);
-            }
+    if RE_AUTHOR_BOOK_FULL.is_match(&fixed)
+        && !fixed.contains("_p")
+        && let Some(caps) = RE_AUTHOR_BOOK_FULL.captures(&fixed)
+    {
+        let book_name = caps.get(1).unwrap().as_str().trim();
+        // 尝试从文本中查找该书的引用页码
+        if let Some(page) = find_book_page_in_source(book_name, source_text) {
+            fixed = format!("{}_p{}", book_name, page);
         }
     }
 
     // ── 规则7: 作者_年份_标题（如 杨中芳、杨宜音_2001_系列研究）→ 简化 ──
-    if RE_AUTHOR_YEAR.is_match(&fixed) && !fixed.contains("_p") {
-        if let Some(caps) = RE_AUTHOR_YEAR.captures(&fixed) {
-            let author = caps.get(1).unwrap().as_str().trim();
-            // 尝试从文本中查找该作者的引用页码
-            if let Some(page) = find_author_page_in_source(author, source_text) {
-                fixed = format!("人生模式_p{}", page);
-            }
+    if RE_AUTHOR_YEAR.is_match(&fixed)
+        && !fixed.contains("_p")
+        && let Some(caps) = RE_AUTHOR_YEAR.captures(&fixed)
+    {
+        let author = caps.get(1).unwrap().as_str().trim();
+        // 尝试从文本中查找该作者的引用页码
+        if let Some(page) = find_author_page_in_source(author, source_text) {
+            fixed = format!("人生模式_p{}", page);
         }
     }
 
     // ── 规则8: 作者（年份）书名（如 乡土人生（费孝通，1947））→ 提取书名 ──
-    if RE_PAREN_BOOK.is_match(&fixed) && !fixed.contains("_p") {
-        if let Some(caps) = RE_PAREN_BOOK.captures(&fixed) {
-            let book = caps.get(1).unwrap().as_str().trim();
-            if let Some(page) = find_book_page_in_source(book, source_text) {
-                fixed = format!("人生模式_p{}", page);
-            }
+    if RE_PAREN_BOOK.is_match(&fixed)
+        && !fixed.contains("_p")
+        && let Some(caps) = RE_PAREN_BOOK.captures(&fixed)
+    {
+        let book = caps.get(1).unwrap().as_str().trim();
+        if let Some(page) = find_book_page_in_source(book, source_text) {
+            fixed = format!("人生模式_p{}", page);
         }
     }
 
@@ -649,9 +837,16 @@ fn fix_ref_format(card: &mut Card, source_text: &str) {
     }
 
     // ── 规则10: 全角数字/标点修复 ──
-    fixed = fixed.replace('０', "0").replace('１', "1").replace('２', "2")
-        .replace('３', "3").replace('４', "4").replace('５', "5")
-        .replace('６', "6").replace('７', "7").replace('８', "8")
+    fixed = fixed
+        .replace('０', "0")
+        .replace('１', "1")
+        .replace('２', "2")
+        .replace('３', "3")
+        .replace('４', "4")
+        .replace('５', "5")
+        .replace('６', "6")
+        .replace('７', "7")
+        .replace('８', "8")
         .replace('９', "9");
 
     if fixed != ref_text {
@@ -663,18 +858,18 @@ fn fix_ref_format(card: &mut Card, source_text: &str) {
 fn is_valid_v3_ref(ref_text: &str) -> bool {
     if let Some(idx) = ref_text.find("_p") {
         let after = &ref_text[idx + 2..];
-        return after.chars().next().map_or(false, |c| c.is_ascii_digit());
+        return after.chars().next().is_some_and(|c| c.is_ascii_digit());
     }
     false
 }
 
 /// 从文本中推断书名
-/// [M1] 从硬编码提取为可维护常量列表
+/// 运行时从 .cardnote/books.json 加载已知书籍列表
 fn infer_book_name(source_text: &str) -> String {
-    // 优先从文本中的标题提取
-    for book in KNOWN_BOOKS {
-        if source_text.contains(book) {
-            return book.to_string();
+    let known_books = crate::config::known_book_names();
+    for book in &known_books {
+        if source_text.contains(book.as_str()) {
+            return book.clone();
         }
     }
     "来源".to_string()
@@ -694,7 +889,11 @@ fn find_book_page_in_source(book_name: &str, source_text: &str) -> Option<String
     if source_text.is_empty() {
         return None;
     }
-    let re = Regex::new(&format!(r"## 第 (\d+) 页[\s\S]{{0,500}}?{}", regex::escape(book_name))).unwrap();
+    let re = Regex::new(&format!(
+        r"## 第 (\d+) 页[\s\S]{{0,500}}?{}",
+        regex::escape(book_name)
+    ))
+    .unwrap();
     re.captures(source_text)
         .map(|caps| caps.get(1).unwrap().as_str().to_string())
 }
@@ -704,7 +903,11 @@ fn find_author_page_in_source(author: &str, source_text: &str) -> Option<String>
     if source_text.is_empty() {
         return None;
     }
-    let re = Regex::new(&format!(r"## 第 (\d+) 页[\s\S]{{0,500}}?{}", regex::escape(author))).unwrap();
+    let re = Regex::new(&format!(
+        r"## 第 (\d+) 页[\s\S]{{0,500}}?{}",
+        regex::escape(author)
+    ))
+    .unwrap();
     re.captures(source_text)
         .map(|caps| caps.get(1).unwrap().as_str().to_string())
 }
@@ -723,7 +926,11 @@ fn find_concept_page_by_title(title: &str, source_text: &str) -> Option<String> 
         .collect();
 
     for kw in &keywords {
-        let re = Regex::new(&format!(r"(?i)## 第 (\d+) 页[\s\S]{{0,1000}}?{}", regex::escape(kw))).unwrap();
+        let re = Regex::new(&format!(
+            r"(?i)## 第 (\d+) 页[\s\S]{{0,1000}}?{}",
+            regex::escape(kw)
+        ))
+        .unwrap();
         if let Some(caps) = re.captures(source_text) {
             return Some(caps.get(1).unwrap().as_str().to_string());
         }
@@ -755,7 +962,7 @@ fn check_ref_format(card: &Card, issues: &mut Vec<LintIssue>) {
     // 检查 `_p` 后面是否有数字
     if let Some(idx) = ref_text.find("_p") {
         let after = &ref_text[idx + 2..];
-        if after.chars().next().map_or(false, |c| c.is_ascii_digit()) {
+        if after.chars().next().is_some_and(|c| c.is_ascii_digit()) {
             return; // v3 格式通过
         }
     }
@@ -834,15 +1041,14 @@ fn check_typed_card_requirements(card: &Card, issues: &mut Vec<LintIssue>) {
                 });
             }
         }
-        CardType::Review => {
+        CardType::Review
             // [v0.1.6] 已剔除关键词检查：原逻辑要求内容必须包含"综合/关联/跨/整体"
             // 等特定词汇才能判定为"有跨主题连接"，但 LLM 可能用其他表达方式实现
             // 同样的语义连接。字符串包含检查无法判断语义层面的跨主题整合。
             // 保留字数门槛（≥120字）确保综述卡有足够的展开空间。
-            if card.content.chars().count() < 120 {
+            if card.content.chars().count() < 120 => {
                 issues.push(LintIssue::ReviewMissingSynthesis);
             }
-        }
         _ => {}
     }
 }
@@ -864,61 +1070,80 @@ fn check_evidence_traceability(card: &Card, source_text: &str, issues: &mut Vec<
     }
 }
 
-/// 计算两段文本的相似度（简单字符重叠率）
+/// 计算两段文本的相似度（最长公共子序列 LCS）
 fn compute_text_similarity(a: &str, b: &str) -> f64 {
     if a.is_empty() || b.is_empty() {
         return 0.0;
     }
 
-    // 简化的相似度：较短的文本在较长文本中的最大连续子串匹配率
-    let (shorter, longer) = if a.len() <= b.len() { (a, b) } else { (b, a) };
+    let chars_a: Vec<char> = a.chars().collect();
+    let chars_b: Vec<char> = b.chars().collect();
+    let n = chars_a.len();
+    let m = chars_b.len();
 
-    // 计算shorter中有多少字符出现在longer中
-    let shorter_chars: Vec<char> = shorter.chars().collect();
-    let longer_chars: Vec<char> = longer.chars().collect();
-
-    if shorter_chars.is_empty() {
+    if n == 0 || m == 0 {
         return 0.0;
     }
 
-    let mut matched = 0;
-    for ch in &shorter_chars {
-        if longer_chars.contains(ch) {
-            matched += 1;
+    // 动态规划计算 LCS 长度
+    let mut dp = vec![vec![0usize; m + 1]; n + 1];
+    for i in 1..=n {
+        for j in 1..=m {
+            if chars_a[i - 1] == chars_b[j - 1] {
+                dp[i][j] = dp[i - 1][j - 1] + 1;
+            } else {
+                dp[i][j] = dp[i - 1][j].max(dp[i][j - 1]);
+            }
         }
     }
 
-    matched as f64 / shorter_chars.len() as f64
+    let lcs_len = dp[n][m];
+    lcs_len as f64 / n.max(m) as f64
 }
 
-/// 计算单张卡片质量评分（0.0-1.0）
+/// 计算单张卡片质量评分（0.0-1.0），分段线性评分保留区分度
 fn compute_card_quality_score(_card: &Card, issues: &[LintIssue]) -> f64 {
-    let mut score: f64 = 1.0;
-
-    // 每个问题按严重程度扣分
-    for issue in issues {
-        let deduction: f64 = match issue {
-            LintIssue::EmptyTitle => 1.0,                 // 致命
-            LintIssue::EmptyOrShortContent { .. } => 0.5, // 严重
-            LintIssue::HighGarbageRatio { .. } => 0.4,    // 严重
-            LintIssue::TitleContentMismatch => 0.3,       // 中等
-            LintIssue::LowInfoDensity { .. } => 0.1,      // 轻微（v0.1.6: 从 0.2 降到 0.1）
-            LintIssue::LikelyCopied { .. } => 0.25,       // 中等
-            LintIssue::ReferenceMismatch => 0.15,         // 轻微
-            LintIssue::MissingEvidence => 0.6,
-            LintIssue::EvidenceNotFound => 0.6,
-            LintIssue::QuoteMissingSource => 0.6,
-            LintIssue::GraphMissingStructure => 0.6,
-            LintIssue::IndexTooFewEntries { .. } => 0.6,
-            LintIssue::ActionMissingSteps => 0.3,
-            LintIssue::TermMissingDefinition => 0.3,
-            LintIssue::ReviewMissingSynthesis => 0.3,
-            LintIssue::InvalidRefFormat => 0.6, // 致命
-        };
-        score -= deduction;
+    if issues.is_empty() {
+        return 1.0;
     }
 
-    score.max(0.0)
+    // 按严重程度分类统计
+    let mut critical: u32 = 0;
+    let mut major: u32 = 0;
+    let mut minor: u32 = 0;
+
+    for issue in issues {
+        match issue {
+            // Critical: 每个扣 0.4
+            LintIssue::EmptyTitle
+            | LintIssue::InvalidRefFormat
+            | LintIssue::QuoteMissingSource
+            | LintIssue::GraphMissingStructure
+            | LintIssue::MissingEvidence
+            | LintIssue::EvidenceNotFound => critical += 1,
+
+            // Major: 每个扣 0.15
+            LintIssue::EmptyOrShortContent { .. }
+            | LintIssue::HighGarbageRatio { .. }
+            | LintIssue::LikelyCopied { .. }
+            | LintIssue::TitleContentMismatch
+            | LintIssue::IndexTooFewEntries { .. } => major += 1,
+
+            // Minor: 每个扣 0.05
+            LintIssue::LowInfoDensity { .. }
+            | LintIssue::ReferenceMismatch
+            | LintIssue::ActionMissingSteps
+            | LintIssue::TermMissingDefinition
+            | LintIssue::ReviewMissingSynthesis => minor += 1,
+        }
+    }
+
+    let critical_deduction = (critical as f64 * 0.4).min(0.9);
+    let major_deduction = (major as f64 * 0.15).min(0.5);
+    let minor_deduction = (minor as f64 * 0.05).min(0.3);
+
+    let score = 1.0 - critical_deduction - major_deduction - minor_deduction;
+    score.max(0.1) // 最低 0.1，保留区分度
 }
 
 #[cfg(test)]
@@ -1288,5 +1513,163 @@ mod tests {
             result.issues.contains(&LintIssue::InvalidRefFormat),
             "_p后非数字应为无效"
         );
+    }
+
+    // ── LCS 相似度对抗性测试 ──
+
+    #[test]
+    fn test_lcs_similarity_abab_vs_aaabbbb() {
+        // 反例1: 字符相同但语序完全不同 — LCS 改善了字符包含率的问题
+        let sim = compute_text_similarity("abababab", "aaaabbbb");
+        assert!(sim < 0.7, "字符相同但语序不同应低于 0.7: {}", sim);
+    }
+
+    #[test]
+    fn test_lcs_similarity_chinese_contains() {
+        // 反例2: 后者包含前者
+        let sim = compute_text_similarity("认知负荷理论", "认知负荷理论指出");
+        assert!(sim > 0.6, "后者包含前者应返回较高相似度: {}", sim);
+    }
+
+    #[test]
+    fn test_lcs_similarity_identical() {
+        // 边界1: 完全相同
+        let sim = compute_text_similarity("相同内容", "相同内容");
+        assert!((sim - 1.0).abs() < 1e-10, "完全相同应返回 1.0: {}", sim);
+    }
+
+    #[test]
+    fn test_lcs_similarity_completely_different() {
+        // 边界2: 完全不同
+        let sim = compute_text_similarity("认知负荷理论", "天气预报很准确");
+        assert!(sim < 0.3, "完全不同应返回低相似度: {}", sim);
+    }
+
+    #[test]
+    fn test_lcs_similarity_empty() {
+        assert_eq!(compute_text_similarity("", "非空"), 0.0);
+        assert_eq!(compute_text_similarity("非空", ""), 0.0);
+    }
+
+    // ── 质量评分区分度测试 ──
+
+    #[test]
+    fn test_quality_score_two_critical() {
+        let card = test_card();
+        let issues = vec![LintIssue::EmptyTitle, LintIssue::InvalidRefFormat];
+        let score = compute_card_quality_score(&card, &issues);
+        assert!(
+            score >= 0.1 && score <= 0.35,
+            "2 Critical 应评分 0.1-0.35: {}",
+            score
+        );
+    }
+
+    #[test]
+    fn test_quality_score_ten_minor() {
+        let card = test_card();
+        let issues = vec![
+            LintIssue::LowInfoDensity {
+                density: 0.01,
+                threshold: 0.05
+            };
+            10
+        ];
+        let score = compute_card_quality_score(&card, &issues);
+        assert!(
+            score >= 0.4 && score <= 0.7,
+            "10 Minor 应评分 0.4-0.7: {}",
+            score
+        );
+    }
+
+    #[test]
+    fn test_quality_score_no_issues() {
+        let card = test_card();
+        let score = compute_card_quality_score(&card, &[]);
+        assert!(
+            (score - 1.0).abs() < 1e-10,
+            "无 issue 应评分 1.0: {}",
+            score
+        );
+    }
+
+    #[test]
+    fn test_quality_score_differentiation() {
+        // 2 Critical 和 10 Minor 应得不同分数
+        let card = test_card();
+        let critical_score = compute_card_quality_score(
+            &card,
+            &[LintIssue::EmptyTitle, LintIssue::InvalidRefFormat],
+        );
+        let minor_score = compute_card_quality_score(
+            &card,
+            &vec![
+                LintIssue::LowInfoDensity {
+                    density: 0.01,
+                    threshold: 0.05
+                };
+                10
+            ],
+        );
+        assert!(
+            (critical_score - minor_score).abs() > 0.05,
+            "不同 issue 组合应有区分度: critical={}, minor={}",
+            critical_score,
+            minor_score
+        );
+    }
+
+    // ── LCS 性能基准测试 ──
+
+    #[test]
+    fn test_lcs_performance_500x500() {
+        let a: String = (0..500)
+            .map(|i| char::from_u32((0x4E00 + i % 20000) as u32).unwrap())
+            .collect();
+        let b: String = (0..500)
+            .map(|i| char::from_u32((0x4E00 + (i + 100) % 20000) as u32).unwrap())
+            .collect();
+        let start = std::time::Instant::now();
+        let _sim = compute_text_similarity(&a, &b);
+        let elapsed = start.elapsed();
+        assert!(
+            elapsed.as_millis() < 100,
+            "LCS 500x500字符应在100ms内完成: {}ms",
+            elapsed.as_millis()
+        );
+    }
+
+    // ── ref 格式正向测试 ──
+
+    #[test]
+    fn test_ref_format_valid_range() {
+        let mut card = test_card();
+        card.reference = "人生模式_p172-173".to_string();
+        let config = CardLintConfig::default();
+        let result = lint_card(&card, &config);
+        assert!(!result.issues.contains(&LintIssue::InvalidRefFormat));
+    }
+
+    #[test]
+    fn test_ref_format_cjk_book_name() {
+        let mut card = test_card();
+        card.reference = "聪明的阅读者_p15".to_string();
+        let config = CardLintConfig::default();
+        let result = lint_card(&card, &config);
+        assert!(!result.issues.contains(&LintIssue::InvalidRefFormat));
+    }
+
+    // ── 类型混淆检测测试 ──
+
+    #[test]
+    fn test_type_confusion_term_card_title_is_card_type_name() {
+        let mut card = test_card();
+        card.card_type = CardType::Term;
+        card.title = "反常识卡——什么是反常识".to_string();
+        let config = CardLintConfig::default();
+        let result = lint_card(&card, &config);
+        // 术语卡标题包含"反常识卡"应在检查中被标记
+        assert!(!result.issues.is_empty() || !result.is_valid);
     }
 }

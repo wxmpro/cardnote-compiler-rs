@@ -21,11 +21,7 @@ pub struct ProviderHealth {
 
 impl ProviderHealth {
     pub fn status_icon(&self) -> &'static str {
-        if self.available {
-            "✅"
-        } else {
-            "❌"
-        }
+        if self.available { "✅" } else { "❌" }
     }
 }
 
@@ -33,7 +29,9 @@ impl ProviderHealth {
 async fn check_provider(cred: &ProviderCredential) -> Vec<ProviderHealth> {
     let registry = ProviderRegistry::new();
     let provider = registry.get(&cred.provider_id);
-    let provider_name = provider.map(|p| p.name.clone()).unwrap_or_else(|| cred.provider_id.clone());
+    let provider_name = provider
+        .map(|p| p.name.clone())
+        .unwrap_or_else(|| cred.provider_id.clone());
 
     // 确定要测试的模型：优先用户指定的，否则用 provider 默认模型
     let models_to_test: Vec<String> = if let Some(ref user_model) = cred.default_model {
@@ -133,12 +131,10 @@ pub async fn check_all_providers() -> Vec<ProviderHealth> {
     }
 
     // 按可用性（可用优先）然后按延迟排序
-    all_results.sort_by(|a, b| {
-        match (a.available, b.available) {
-            (true, false) => std::cmp::Ordering::Less,
-            (false, true) => std::cmp::Ordering::Greater,
-            _ => a.latency_ms.cmp(&b.latency_ms),
-        }
+    all_results.sort_by(|a, b| match (a.available, b.available) {
+        (true, false) => std::cmp::Ordering::Less,
+        (false, true) => std::cmp::Ordering::Greater,
+        _ => a.latency_ms.cmp(&b.latency_ms),
     });
 
     all_results
@@ -164,7 +160,12 @@ pub fn print_health_report(results: &[ProviderHealth]) {
 
     println!(
         "║ {:<56}║",
-        format!("总计: {} 个模型 | ✅ 可用 {} | ❌ 失败 {}", total, available, total - available)
+        format!(
+            "总计: {} 个模型 | ✅ 可用 {} | ❌ 失败 {}",
+            total,
+            available,
+            total - available
+        )
     );
     println!(
         "{}",
@@ -175,7 +176,11 @@ pub fn print_health_report(results: &[ProviderHealth]) {
         let status = if result.available {
             format!("{} {}ms", "可用".green(), result.latency_ms)
         } else {
-            format!("{} — {}", "失败".red(), result.error.as_deref().unwrap_or("未知"))
+            format!(
+                "{} — {}",
+                "失败".red(),
+                result.error.as_deref().unwrap_or("未知")
+            )
         };
         let line = format!(
             "{} {:<12} {:<20} {}",
@@ -195,14 +200,11 @@ pub fn print_health_report(results: &[ProviderHealth]) {
 
 /// 选择最佳 Provider（可用且延迟最低）
 pub fn select_best(results: &[ProviderHealth]) -> Option<(String, String, String)> {
-    results
-        .iter()
-        .find(|r| r.available)
-        .map(|r| {
-            (
-                r.provider_id.clone(),
-                r.model.clone(),
-                format!("{} / {}", r.provider_name, r.model),
-            )
-        })
+    results.iter().find(|r| r.available).map(|r| {
+        (
+            r.provider_id.clone(),
+            r.model.clone(),
+            format!("{} / {}", r.provider_name, r.model),
+        )
+    })
 }

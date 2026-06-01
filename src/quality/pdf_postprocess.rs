@@ -232,13 +232,14 @@ fn regex_captures_page_number(s: &str) -> Option<String> {
     // 模式1: "— N —" 或 "- N -" 或 "– N –"
     let dash_chars = ['—', '-', '–', '—'];
     let chars: Vec<char> = s.chars().collect();
-    if chars.len() >= 3 {
-        if dash_chars.contains(&chars[0]) && dash_chars.contains(&chars[chars.len() - 1]) {
-            let middle: String = chars[1..chars.len() - 1].iter().collect();
-            let trimmed = middle.trim();
-            if trimmed.chars().all(|c| c.is_ascii_digit()) {
-                return Some(s.to_string());
-            }
+    if chars.len() >= 3
+        && dash_chars.contains(&chars[0])
+        && dash_chars.contains(&chars[chars.len() - 1])
+    {
+        let middle: String = chars[1..chars.len() - 1].iter().collect();
+        let trimmed = middle.trim();
+        if trimmed.chars().all(|c| c.is_ascii_digit()) {
+            return Some(s.to_string());
         }
     }
 

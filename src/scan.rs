@@ -281,10 +281,10 @@ pub fn find_ocr_project() -> Option<PathBuf> {
     // 2. 相对路径：从当前项目上一级查找 pdf-expert-batch-ocr
     if let Ok(cwd) = std::env::current_dir() {
         let relative = cwd.parent().map(|p| p.join("pdf-expert-batch-ocr"));
-        if let Some(p) = relative {
-            if p.exists() {
-                return Some(p);
-            }
+        if let Some(p) = relative
+            && p.exists()
+        {
+            return Some(p);
         }
     }
 

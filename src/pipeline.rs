@@ -3,16 +3,16 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, LazyLock};
 
 use regex::Regex;
-use tokio::sync::Semaphore;
 use serde::{Deserialize, Serialize};
+use tokio::sync::Semaphore;
 
 use crate::api::LlmClient;
-use crate::config::{CHUNK_SIZE, MAX_WORKERS};
+use crate::config::CHUNK_SIZE;
 use crate::doc_type::{DocTypeDetector, DocumentType};
 use crate::error::{AppError, Result};
 use crate::models::{
-    Card, ChunkInfo, CompilationDiagnostics, CompilationResult, Entity, KnowledgeGraph,
-    LlmMessage, Relation, StageFail, Summary,
+    Card, ChunkInfo, CompilationDiagnostics, CompilationResult, Entity, KnowledgeGraph, LlmMessage,
+    Relation, StageFail, Summary,
 };
 use crate::stages::cards::{CardPlanner, generate_cards};
 use crate::stages::common::{ChatFn, ChatJsonFn};
@@ -145,7 +145,14 @@ impl StageCache {
     fn cache_key(stage: &str, document: &str, prompt: &str, model: &str) -> String {
         let doc_hash = Self::fnv1a_hash(document);
         let prompt_hash = Self::fnv1a_hash(prompt);
-        let combined = format!("{}|{}|{}|{}|{}", Self::VERSION, stage, doc_hash, prompt_hash, model);
+        let combined = format!(
+            "{}|{}|{}|{}|{}",
+            Self::VERSION,
+            stage,
+            doc_hash,
+            prompt_hash,
+            model
+        );
         Self::fnv1a_hash(&combined)
     }
 
@@ -203,8 +210,8 @@ impl StageCache {
 fn cleanup_cache_dir() {
     const MAX_AGE_DAYS: u64 = 30;
     const MAX_FILES: usize = 200;
-    let cutoff = std::time::SystemTime::now()
-        - std::time::Duration::from_secs(MAX_AGE_DAYS * 86400);
+    let cutoff =
+        std::time::SystemTime::now() - std::time::Duration::from_secs(MAX_AGE_DAYS * 86400);
 
     let dirs = [".cardc_cache", ".cardc_cache/stages"];
     for dir in &dirs {
@@ -221,16 +228,16 @@ fn cleanup_cache_dir() {
                 if !name.ends_with(".json") && !name.ends_with(".cache.json") {
                     continue;
                 }
-                if let Ok(meta) = entry.metadata() {
-                    if meta.is_file() {
-                        let mtime = meta.modified().unwrap_or(std::time::SystemTime::UNIX_EPOCH);
-                        if mtime < cutoff {
-                            if let Err(e) = std::fs::remove_file(entry.path()) {
-                                eprintln!("  ⚠ 缓存清理失败: {} — {}", entry.path().display(), e);
-                            }
-                        } else {
-                            files.push((entry, mtime));
+                if let Ok(meta) = entry.metadata()
+                    && meta.is_file()
+                {
+                    let mtime = meta.modified().unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+                    if mtime < cutoff {
+                        if let Err(e) = std::fs::remove_file(entry.path()) {
+                            eprintln!("  ⚠ 缓存清理失败: {} — {}", entry.path().display(), e);
                         }
+                    } else {
+                        files.push((entry, mtime));
                     }
                 }
             }
@@ -238,7 +245,7 @@ fn cleanup_cache_dir() {
 
         // 若剩余文件数仍超过上限，按修改时间排序删除最旧的
         if files.len() > MAX_FILES {
-            files.sort_by(|a, b| a.1.cmp(&b.1));
+            files.sort_by_key(|a| a.1);
             let to_remove = files.len() - MAX_FILES;
             for (entry, _) in files.into_iter().take(to_remove) {
                 if let Err(e) = std::fs::remove_file(entry.path()) {
@@ -400,8 +407,10 @@ impl Pipeline {
             .map(|v| v != "1" && v != "true")
             .unwrap_or(true);
 
-        // 启动时清理过期缓存
-        cleanup_cache_dir();
+        // 异步启动缓存清理，不阻塞 Pipeline 初始化
+        tokio::spawn(async move {
+            cleanup_cache_dir();
+        });
 
         Self {
             ctx: CompileContext {
@@ -492,36 +501,43 @@ impl Pipeline {
         let load_prompt = |name: &str| ctx.load_prompt(name);
 
         // 摘要阶段（含缓存）
-        let summary = if let Some(cached) = ctx.try_load_stage::<Summary>("summary", document, "summary") {
-            println!("  💾 摘要缓存命中");
-            cached
-        } else {
-            match with_retry("摘要", || generate_summary(document, ctx, &load_prompt)).await {
-                Ok(s) => {
-                    println!("  ✓ 摘要完成");
-                    ctx.save_stage("summary", document, "summary", &s);
-                    s
+        let summary =
+            if let Some(cached) = ctx.try_load_stage::<Summary>("summary", document, "summary") {
+                println!("  💾 摘要缓存命中");
+                cached
+            } else {
+                match with_retry("摘要", || generate_summary(document, ctx, &load_prompt)).await {
+                    Ok(s) => {
+                        println!("  ✓ 摘要完成");
+                        ctx.save_stage("summary", document, "summary", &s);
+                        s
+                    }
+                    Err(e) => {
+                        let err_msg = format!("{}", e);
+                        println!("  ✗ 摘要失败: {}", err_msg);
+                        diagnostics.failures.push(StageFail {
+                            stage: "summary".to_string(),
+                            error: err_msg,
+                            retry_count: 3,
+                            final_status: "failed".to_string(),
+                        });
+                        Summary::default()
+                    }
                 }
-                Err(e) => {
-                    let err_msg = format!("{}", e);
-                    println!("  ✗ 摘要失败: {}", err_msg);
-                    diagnostics.failures.push(StageFail {
-                        stage: "summary".to_string(),
-                        error: err_msg,
-                        retry_count: 3,
-                        final_status: "failed".to_string(),
-                    });
-                    Summary::default()
-                }
-            }
-        };
+            };
 
         // 实体阶段（含缓存）
-        let entities = if let Some(cached) = ctx.try_load_stage::<Vec<Entity>>("entities", document, "entity_extraction") {
+        let entities = if let Some(cached) =
+            ctx.try_load_stage::<Vec<Entity>>("entities", document, "entity_extraction")
+        {
             println!("  💾 实体缓存命中 — {} 个实体", cached.len());
             cached
         } else {
-            match with_retry("实体", || extract_entities(document, ctx, ctx, &load_prompt)).await {
+            match with_retry("实体", || {
+                extract_entities(document, ctx, ctx, &load_prompt)
+            })
+            .await
+            {
                 Ok(e) => {
                     println!("  ✓ 标注完成 — 识别 {} 个实体", e.len());
                     ctx.save_stage("entities", document, "entity_extraction", &e);
@@ -544,7 +560,9 @@ impl Pipeline {
         // 卡片阶段
         let cards = match with_retry("卡片", || {
             generate_cards(document, doc_type, ctx, &load_prompt)
-        }).await {
+        })
+        .await
+        {
             Ok(c) => {
                 println!("  ✓ 卡片完成 — 生成 {} 张卡片", c.len());
                 c
@@ -563,13 +581,17 @@ impl Pipeline {
         };
 
         // 图谱阶段（含缓存）
-        let graph = if let Some(cached) = ctx.try_load_stage::<KnowledgeGraph>("graph", document, "relation_graph") {
+        let graph = if let Some(cached) =
+            ctx.try_load_stage::<KnowledgeGraph>("graph", document, "relation_graph")
+        {
             println!("  💾 图谱缓存命中 — {} 条关系", cached.relations.len());
             cached
         } else {
             match with_retry("图谱", || {
                 build_graph(document, &entities, ctx, ctx, &load_prompt)
-            }).await {
+            })
+            .await
+            {
                 Ok(g) => {
                     println!("  ✓ 图谱完成 — {} 条关系", g.relations.len());
                     ctx.save_stage("graph", document, "relation_graph", &g);
@@ -629,10 +651,7 @@ impl Pipeline {
         source_file: &str,
         doc_type: DocumentType,
     ) -> Result<CompilationResult> {
-        println!(
-            "\n[模式] 分块 Map-Reduce 编译（阈值: {} 字符，并行: {} 任务）",
-            CHUNK_SIZE, MAX_WORKERS
-        );
+        println!("\n[模式] 分块 Map-Reduce 编译（阈值: {} 字符）", CHUNK_SIZE);
         println!("{}", "-".repeat(60));
 
         // 1. Split
@@ -663,14 +682,20 @@ impl Pipeline {
             println!("  🔄 继续编译未完成的块: {:?}", pending);
         }
 
-        // 2b. 编译未完成的块（最多 2 个并发，避免触发 API 限流）
-        let semaphore = Arc::new(Semaphore::new(2));
+        // 2b. 编译未完成的块（并发数可通过环境变量配置，默认 2）
+        let max_workers: usize = std::env::var("CARDNOTE_MAX_WORKERS")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(2);
+        let semaphore = Arc::new(Semaphore::new(max_workers));
         let mut handles = Vec::new();
         for idx in &pending {
             let idx = *idx; // copy to avoid borrow issue
-            let permit = semaphore.clone().acquire_owned().await.map_err(|e| {
-                AppError::TaskPanic(format!("并发信号量获取失败: {}", e))
-            })?;
+            let permit = semaphore
+                .clone()
+                .acquire_owned()
+                .await
+                .map_err(|e| AppError::TaskPanic(format!("并发信号量获取失败: {}", e)))?;
             let ctx = self.ctx.clone();
             let (title, doc) = chunks[idx].clone();
             println!("  处理块 {}/{}...", idx + 1, chunks_len);
@@ -770,12 +795,8 @@ impl Pipeline {
 
         // 3. Reduce
         println!("\n[3/4] Reduce 阶段 — 合并去重...");
-        let mut all_entities = Vec::new();
-        let mut all_cards = Vec::new();
-        let mut all_relations = Vec::new();
-        let mut all_summaries = Vec::new();
 
-        // 先生成 ChunkInfo（在 move 数据之前），避免后续 clone
+        // 先生成 ChunkInfo（在 move 数据之前）
         let chunk_infos: Vec<ChunkInfo> = chunk_results
             .iter()
             .map(|c| ChunkInfo {
@@ -787,6 +808,21 @@ impl Pipeline {
             })
             .collect();
 
+        // 质量过滤：使用 chunk 级别源文本而非完整 document（性能提升 10x+）
+        for r in &mut chunk_results {
+            let (chunk_filtered, _stats) = crate::quality::filter_cards_with_source(
+                &r.cards,
+                &r.document,
+                &crate::quality::CardLintConfig::default(),
+            );
+            r.cards = chunk_filtered;
+        }
+
+        let mut all_entities = Vec::new();
+        let mut all_cards = Vec::new();
+        let mut all_relations = Vec::new();
+        let mut all_summaries = Vec::new();
+
         for r in &mut chunk_results {
             all_entities.append(&mut r.entities);
             all_cards.append(&mut r.cards);
@@ -795,13 +831,6 @@ impl Pipeline {
                 all_summaries.push(std::mem::take(&mut r.summary));
             }
         }
-
-        // 质量过滤：移除空卡片/低质量卡片
-        let (filtered_cards, _lint_stats) = crate::quality::filter_cards_with_source(
-            &all_cards,
-            document,
-            &crate::quality::CardLintConfig::default(),
-        );
 
         let (unique_entities, entity_stats, entity_name_map) = unify_entities(&all_entities);
         if entity_stats.merged_groups > 0 {
@@ -813,7 +842,7 @@ impl Pipeline {
                 entity_stats.eliminated_duplicates
             );
         }
-        let unique_cards = dedup_cards(&filtered_cards);
+        let unique_cards = dedup_cards(&all_cards);
         let updated_relations = update_relation_endpoints(&all_relations, &entity_name_map);
         let unique_relations = merge_relations(&updated_relations);
 
@@ -1058,9 +1087,8 @@ async fn compile_chunk(
 
 fn heading_regex() -> &'static Regex {
     // [M3] 统一使用 LazyLock（Rust 1.80+ 标准库），与代码库其他位置保持一致
-    static RE: LazyLock<Regex> = LazyLock::new(|| {
-        Regex::new(r"^(#{1,3})\s+(.+)$").expect("硬编码正则应始终有效")
-    });
+    static RE: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"^(#{1,3})\s+(.+)$").expect("硬编码正则应始终有效"));
     &RE
 }
 

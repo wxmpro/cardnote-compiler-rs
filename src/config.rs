@@ -44,9 +44,8 @@ pub struct DocLimits {
 /// - cards:    min(max(doc_chars/8,  3000), 8000)
 /// - index:    固定 4000
 pub fn doc_limits_for(doc_chars: usize) -> DocLimits {
-    let scale = |divisor: usize, min: usize, max: usize| -> usize {
-        (doc_chars / divisor).clamp(min, max)
-    };
+    let scale =
+        |divisor: usize, min: usize, max: usize| -> usize { (doc_chars / divisor).clamp(min, max) };
     DocLimits {
         summary_input: 12000,
         summary_output: 2000,
@@ -649,4 +648,59 @@ pub fn get_provider_label(provider: &str) -> String {
         .find_by_alias(provider)
         .map(|p| p.name.to_string())
         .unwrap_or_else(|| provider.to_string())
+}
+
+// ═══════════════════════════════════════════════════════
+//  书籍配置（运行时加载，无需重新编译）
+// ═══════════════════════════════════════════════════════
+
+use serde::Deserialize;
+
+/// 书籍配置（从 .cardnote/books.json 加载）
+#[derive(Debug, Clone, Deserialize)]
+pub struct BookConfig {
+    pub name: String,
+    #[serde(default)]
+    pub aliases: Vec<String>,
+    #[serde(default)]
+    pub author: Option<String>,
+}
+
+/// 加载书籍配置，运行时从 .cardnote/books.json 读取
+/// 文件不存在或格式错误时返回默认配置
+pub fn load_books_config() -> Vec<BookConfig> {
+    let config_path = std::path::Path::new(".cardnote/books.json");
+    if config_path.exists()
+        && let Ok(content) = std::fs::read_to_string(config_path)
+        && let Ok(books) = serde_json::from_str::<Vec<BookConfig>>(&content)
+        && !books.is_empty()
+    {
+        return books;
+    }
+
+    // 默认配置
+    vec![
+        BookConfig {
+            name: "人生模式".to_string(),
+            aliases: vec!["人生模式".to_string()],
+            author: Some("阳志平".to_string()),
+        },
+        BookConfig {
+            name: "聪明的阅读者".to_string(),
+            aliases: vec!["聪明的阅读者".to_string(), "阅读者".to_string()],
+            author: Some("阳志平".to_string()),
+        },
+    ]
+}
+
+/// 获取所有已知书名（用于 ref 格式修复）
+pub fn known_book_names() -> Vec<String> {
+    load_books_config()
+        .iter()
+        .flat_map(|b| {
+            let mut names = b.aliases.clone();
+            names.push(b.name.clone());
+            names
+        })
+        .collect()
 }

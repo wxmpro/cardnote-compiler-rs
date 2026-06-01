@@ -26,6 +26,30 @@ impl Default for DedupConfig {
     }
 }
 
+/// 根据内容长度自适应配置
+/// 短内容（<200字）使用 2-shingle + 更低阈值，解决中文短内容 Jaccard 失效问题
+pub fn adaptive_dedup_config(content_len: usize) -> DedupConfig {
+    if content_len < 100 {
+        // 金句卡等超短内容：2 字 shingle + 低阈值
+        DedupConfig {
+            similarity_threshold: 0.40,
+            shingle_size: 2,
+            title_weight: 0.3,
+            content_weight: 0.7,
+        }
+    } else if content_len < 200 {
+        // 短内容：2 字 shingle + 中等阈值
+        DedupConfig {
+            similarity_threshold: 0.45,
+            shingle_size: 2,
+            title_weight: 0.3,
+            content_weight: 0.7,
+        }
+    } else {
+        DedupConfig::default()
+    }
+}
+
 /// 去重结果
 #[derive(Debug, Clone)]
 pub struct DedupResult {
@@ -740,5 +764,48 @@ mod tests {
         };
         let score = compute_quality_score(&card);
         assert!((0.0..=1.0).contains(&score));
+    }
+
+    // ── 自适应 Jaccard 对抗性测试 ──
+
+    #[test]
+    fn test_adaptive_jaccard_short_chinese_semantic_similar() {
+        // 短内容反例1: 语义相近但措辞不同
+        let config = adaptive_dedup_config(20);
+        let a = text_to_shingles("阅读是心灵的旅行", config.shingle_size);
+        let b = text_to_shingles("心灵之旅是阅读的本质", config.shingle_size);
+        let sim = jaccard_similarity(&a, &b);
+        assert!(sim > 0.1, "语义相近的中文短内容应有相似度 > 0.1: {}", sim);
+    }
+
+    #[test]
+    fn test_adaptive_jaccard_short_chinese_theory() {
+        // 短内容反例2: 认知负荷理论的两种表述
+        let config = adaptive_dedup_config(20);
+        let a = text_to_shingles("认知负荷理论指出了", config.shingle_size);
+        let b = text_to_shingles("认知负荷理论认为这", config.shingle_size);
+        let sim = jaccard_similarity(&a, &b);
+        assert!(sim > 0.3, "认知负荷理论变体应被识别: {}", sim);
+    }
+
+    #[test]
+    fn test_adaptive_dedup_config_short() {
+        let config = adaptive_dedup_config(50);
+        assert_eq!(config.shingle_size, 2);
+        assert!(config.similarity_threshold < 0.5);
+    }
+
+    #[test]
+    fn test_adaptive_dedup_config_medium() {
+        let config = adaptive_dedup_config(150);
+        assert_eq!(config.shingle_size, 2);
+        assert!(config.similarity_threshold < 0.55);
+    }
+
+    #[test]
+    fn test_adaptive_dedup_config_long() {
+        let config = adaptive_dedup_config(300);
+        assert_eq!(config.shingle_size, 3);
+        assert!(config.similarity_threshold > 0.5);
     }
 }

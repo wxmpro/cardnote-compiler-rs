@@ -54,4 +54,7 @@ shellexpand = "3.1"
 # PDF 解析（纯 Rust，替代 PyMuPDF 做类型检测）
 lopdf = "0.36"
 
+# UUID 生成（v7：时间排序 + 无碰撞）
+uuid = { version = "1.11", features = ["v7"] }
+
 [dev-dependencies]

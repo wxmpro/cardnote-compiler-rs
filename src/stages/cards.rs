@@ -1,18 +1,12 @@
-use std::sync::{LazyLock, Mutex};
+use std::sync::LazyLock;
 
-use chrono::Local;
+use regex::Regex;
 
 use crate::config::doc_limits_for;
 use crate::doc_type::DocumentType;
 use crate::error::Result;
 use crate::models::{Card, CardStatus, CardType, LlmMessage};
 use crate::stages::common::ChatFn;
-
-/// 全局状态：记录最后分配的秒级 Unix 时间戳，确保跨批次 unique_id 不重复
-static LAST_UNIQUE_SEC: LazyLock<Mutex<i64>> = LazyLock::new(|| Mutex::new(0));
-
-/// 唯一编码格式：YYYYMMDDHHMMSS（14 位）
-pub const UNIQUE_ID_FORMAT: &str = "%Y%m%d%H%M%S";
 
 /// 卡片规划条目
 #[derive(Debug, Clone)]
@@ -146,12 +140,18 @@ impl CardPlanner {
 
     /// 书籍规划：多章节、综合性，优先新知卡、术语卡、综述卡、反常识卡
     fn plan_book(char_count: usize) -> Vec<CardPlanItem> {
-        let scale = if char_count > 50000 { 2 } else { 1 };
+        let scale = match char_count {
+            0..=50000 => 1,
+            50001..=150000 => 2,
+            150001..=300000 => 3,
+            300001..=500000 => 4,
+            _ => (char_count / 100000).max(5),
+        };
         vec![
             CardPlanItem::new(CardType::Knowledge, 3 * scale, 5 * scale, true, 1),
             CardPlanItem::new(CardType::Term, 2 * scale, 4 * scale, true, 2),
-            CardPlanItem::new(CardType::Review, 1 * scale, 2 * scale, true, 3),
-            CardPlanItem::new(CardType::CounterIntuit, 1 * scale, 3 * scale, true, 4),
+            CardPlanItem::new(CardType::Review, scale, 2 * scale, true, 3),
+            CardPlanItem::new(CardType::CounterIntuit, scale, 3 * scale, true, 4),
             CardPlanItem::new(CardType::Action, 1, 3, false, 5),
             CardPlanItem::new(CardType::Person, 0, 2, false, 6),
             CardPlanItem::new(CardType::Quote, 0, 3, false, 7),
@@ -162,7 +162,12 @@ impl CardPlanner {
 
     /// 论文规划：学术性强，优先术语卡、新知卡、反常识卡、综述卡
     fn plan_paper(char_count: usize) -> Vec<CardPlanItem> {
-        let scale = if char_count > 30000 { 2 } else { 1 };
+        let scale = match char_count {
+            0..=30000 => 1,
+            30001..=80000 => 2,
+            80001..=150000 => 3,
+            _ => 4,
+        };
         vec![
             CardPlanItem::new(CardType::Term, 3 * scale, 5 * scale, true, 1),
             CardPlanItem::new(CardType::Knowledge, 2 * scale, 4 * scale, true, 2),
@@ -233,9 +238,38 @@ fn card_type_prompt_name(card_type: &CardType) -> &'static str {
         CardType::NewWord => "new_word_card",
         CardType::Note => "note_card",
         CardType::Index => "index_card",
-        CardType::CounterIntuit => "knowledge_card", // 反常识卡合并到新知卡
+        CardType::CounterIntuit => "counter_intuit_card",
         CardType::Review => "review_card",
     }
+}
+
+/// 对插入 prompt 的文档内容进行安全净化，防止 prompt 注入
+fn sanitize_for_prompt(text: &str) -> String {
+    let dangerous_patterns = [
+        "ignore previous instructions",
+        "ignore the above",
+        "forget all rules",
+        "忘记之前的指令",
+        "忽略以上",
+        "忽略上面的指令",
+        "system:",
+        "user:",
+        "assistant:",
+    ];
+
+    let mut sanitized = text.to_string();
+    for pattern in &dangerous_patterns {
+        sanitized = sanitized.replace(pattern, &"█".repeat(pattern.len()));
+    }
+
+    // 限制最大长度（防止超长内容消耗 token）
+    let max_len = 200_000; // 约 100K tokens
+    if sanitized.len() > max_len {
+        sanitized.truncate(max_len);
+        sanitized.push_str("\n\n[内容已截断...]");
+    }
+
+    sanitized
 }
 
 /// 生成所有类型的卡片（分类型调用单类型 Prompt）
@@ -248,18 +282,34 @@ pub async fn generate_cards(
     let plan = CardPlanner::plan(doc_type, document.chars().count());
     let mut all_cards = Vec::new();
 
+    // 安全净化文档内容
+    let safe_document = sanitize_for_prompt(document);
+
     // 处理所有规划类型（不再区分必选/可选）
     for item in plan.iter() {
         let prompt_name = card_type_prompt_name(&item.card_type);
         let prompt_template = match load_prompt(prompt_name) {
             Ok(p) => p,
             Err(e) => {
-                eprintln!("    ⚠ 未找到 Prompt '{}': {}, 跳过", prompt_name, e);
-                continue;
+                eprintln!(
+                    "    ⚠ 未找到 Prompt '{}': {}, 尝试 fallback",
+                    prompt_name, e
+                );
+                // Fallback 到 all_cards 通用格式
+                match load_prompt("all_cards") {
+                    Ok(fallback) => {
+                        eprintln!("    → 使用 all_cards.md 作为 fallback");
+                        fallback
+                    }
+                    Err(e2) => {
+                        eprintln!("    ✗ Fallback 也失败: {}", e2);
+                        continue;
+                    }
+                }
             }
         };
 
-        let prompt = prompt_template.replace("{document}", document);
+        let prompt = prompt_template.replace("{document}", &safe_document);
 
         let system = format!(
             "你是一位以卡片笔记为信仰的知识炼金术士。当前任务：生成{}。请严格遵循 Prompt 中的格式要求输出。",
@@ -300,20 +350,9 @@ pub async fn generate_cards(
         all_cards.extend(cards);
     }
 
-    // 唯一编码：YYYYMMDDHHMMSS（14位格式不变）
-    // 通过全局状态确保跨批次不重复：若上次生成占用到 T，本次从 T+1 开始
-    let base = Local::now();
-    let base_sec = base.timestamp();
-    let mut last_sec = LAST_UNIQUE_SEC.lock().unwrap();
-    let start_sec = std::cmp::max(base_sec, *last_sec + 1);
-
-    for (i, card) in all_cards.iter_mut().enumerate() {
-        let ts = base + chrono::Duration::seconds((start_sec - base_sec) as i64 + i as i64);
-        card.unique_id = ts.format(UNIQUE_ID_FORMAT).to_string();
-    }
-
-    if !all_cards.is_empty() {
-        *last_sec = start_sec + all_cards.len() as i64 - 1;
+    // 使用 UUIDv7 生成唯一 ID（时间排序 + 无全局状态 + 无碰撞）
+    for card in all_cards.iter_mut() {
+        card.unique_id = uuid::Uuid::now_v7().to_string();
     }
 
     Ok(all_cards)
@@ -377,7 +416,9 @@ fn parse_single_type_cards(response: &str, card_type: CardType) -> Result<Vec<Ca
             }
 
             // 跳过金句卡专属字段行（已单独提取）
-            if (trimmed.starts_with("原文") || trimmed.starts_with("出处") || trimmed.starts_with("仿写"))
+            if (trimmed.starts_with("原文")
+                || trimmed.starts_with("出处")
+                || trimmed.starts_with("仿写"))
                 && (trimmed.contains("：") || trimmed.contains(":"))
             {
                 continue;
@@ -418,11 +459,12 @@ fn parse_single_type_cards(response: &str, card_type: CardType) -> Result<Vec<Ca
 
         if !title.is_empty() {
             // 金句卡：source 用 reference 兜底（prompt 只要求 ref 字段）
-            let source = if card_type == CardType::Quote && source.is_empty() && !reference.is_empty() {
-                reference.clone()
-            } else {
-                source
-            };
+            let source =
+                if card_type == CardType::Quote && source.is_empty() && !reference.is_empty() {
+                    reference.clone()
+                } else {
+                    source
+                };
             cards.push(Card {
                 title,
                 content,
@@ -449,13 +491,19 @@ fn parse_single_type_cards(response: &str, card_type: CardType) -> Result<Vec<Ca
     Ok(cards)
 }
 
+/// 预编译字段提取正则，避免每次调用都编译
+static RE_EXTRACT_FIELD: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?m)^(.+?)[:：]\s*(.+?)$").expect("hardcoded regex is valid"));
+
 /// 从文本块中提取字段
 fn extract_field(block: &str, field_name: &str) -> Option<String> {
-    let pattern = format!("{}[:：]\\s*(.+?)(?:\\n|$)", regex::escape(field_name));
-    let re = regex::Regex::new(&pattern).ok()?;
-    re.captures(block)
-        .and_then(|c| c.get(1))
-        .map(|m| m.as_str().trim().to_string())
+    for cap in RE_EXTRACT_FIELD.captures_iter(block) {
+        let name = cap.get(1)?.as_str().trim();
+        if name == field_name {
+            return Some(cap.get(2)?.as_str().trim().to_string());
+        }
+    }
+    None
 }
 
 #[cfg(test)]
@@ -464,9 +512,15 @@ mod tests {
 
     #[test]
     fn test_card_type_prompt_name() {
-        assert_eq!(card_type_prompt_name(&CardType::Knowledge), "knowledge_card");
+        assert_eq!(
+            card_type_prompt_name(&CardType::Knowledge),
+            "knowledge_card"
+        );
         assert_eq!(card_type_prompt_name(&CardType::Term), "term_card");
-        assert_eq!(card_type_prompt_name(&CardType::CounterIntuit), "knowledge_card");
+        assert_eq!(
+            card_type_prompt_name(&CardType::CounterIntuit),
+            "counter_intuit_card"
+        );
         assert_eq!(card_type_prompt_name(&CardType::Review), "review_card");
     }
 

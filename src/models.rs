@@ -125,17 +125,28 @@ impl Card {
         }
     }
 
+    /// 转义 Markdown 特殊字符，防止内容破坏输出格式
+    fn escape_markdown(text: &str) -> String {
+        text.replace("---", "\\---")
+            .replace('#'.to_string().as_str(), "\\#")
+    }
+
     fn to_default_markdown(&self) -> String {
+        let escaped_content = Self::escape_markdown(&self.content);
+        let escaped_title = Self::escape_markdown(&self.title);
         let mut lines = vec![
             format!("# {}", self.card_type),
             "".to_string(),
-            format!("**标题：** {}", self.title),
+            format!("**标题：** {}", escaped_title),
             "".to_string(),
-            self.content.clone(),
+            escaped_content,
             "".to_string(),
         ];
         if !self.reference.is_empty() {
-            lines.push(format!("**ref：** {}", self.reference));
+            lines.push(format!(
+                "**ref：** {}",
+                Self::escape_markdown(&self.reference)
+            ));
             lines.push("".to_string());
         }
         self.append_traceability_markdown(&mut lines);
@@ -284,9 +295,7 @@ pub struct KnowledgeGraph {
 fn mermaid_escape(text: &str) -> String {
     text.replace('"', "'") // 双引号 → 单引号（避免中断 Mermaid 字符串）
         .replace('#', "\\#") // 井号 → 转义（避免被误认为注释）
-        .replace('\r', " ")
-        .replace('\n', " ")
-        .replace('\t', " ")
+        .replace(['\r', '\n', '\t'], " ")
 }
 
 impl KnowledgeGraph {
@@ -485,7 +494,7 @@ pub struct LlmRequest {
 }
 
 /// LLM 调用用量统计
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, serde::Serialize)]
 pub struct LlmUsage {
     pub prompt_tokens: u32,
     pub completion_tokens: u32,
@@ -507,7 +516,8 @@ impl LlmUsage {
         let total_completion: u32 = usages.iter().map(|u| u.completion_tokens).sum();
         let total: u32 = usages.iter().map(|u| u.total_tokens).sum();
         let total_cached: u32 = usages.iter().map(|u| u.cached_tokens).sum();
-        let avg_latency: u64 = usages.iter().map(|u| u.latency_ms).sum::<u64>() / usages.len() as u64;
+        let avg_latency: u64 =
+            usages.iter().map(|u| u.latency_ms).sum::<u64>() / usages.len() as u64;
         let mut lines = vec![
             "╔════════════════════════════════════════════════════════════╗".to_string(),
             "║                 LLM 调用用量报告                          ║".to_string(),

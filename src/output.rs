@@ -129,6 +129,21 @@ pub async fn save_input_quality_report(
     Ok(dir.to_string_lossy().to_string())
 }
 
+/// 过滤被拒绝的卡片：reject_reason 非空或 status != Accepted 的卡片不进入最终输出
+fn filter_rejected_cards(cards: &[Card]) -> (Vec<Card>, Vec<Card>) {
+    let mut accepted = Vec::new();
+    let mut rejected = Vec::new();
+
+    for card in cards {
+        if !card.reject_reason.is_empty() || card.status != CardStatus::Accepted {
+            rejected.push(card.clone());
+        } else {
+            accepted.push(card.clone());
+        }
+    }
+    (accepted, rejected)
+}
+
 /// 保存单篇编译结果
 pub async fn save_single(result: &CompilationResult, output_dir: &str) -> Result<String> {
     // 优先使用源文件名（PDF 名称/书名）作为目录名
@@ -149,20 +164,29 @@ pub async fn save_single(result: &CompilationResult, output_dir: &str) -> Result
     });
     let dir = create_output_dir(output_dir, title).await?;
 
+    // 质量门控：过滤被拒绝的卡片
+    let (accepted_cards, _rejected_cards) = filter_rejected_cards(&result.cards);
+    if !_rejected_cards.is_empty() {
+        eprintln!(
+            "  🛡️  质量门控: {} 张问题卡片被拦截，{} 张通过",
+            _rejected_cards.len(),
+            accepted_cards.len()
+        );
+    }
+
     // 保存摘要
     let summary_path = dir.join("summary.md");
     fs::write(&summary_path, result.summary.to_markdown()).await?;
     apply_42md_lint(&summary_path).await.ok();
 
-    // 保存卡片(按类型分组)
+    // 保存卡片(按类型分组) — 只输出通过门控的卡片
     let cards_dir = dir.join("cards");
     fs::create_dir_all(&cards_dir).await?;
-    save_cards_by_type(&cards_dir, &result.cards).await?;
+    save_cards_by_type(&cards_dir, &accepted_cards).await?;
 
-    // 保存所有卡片(单文件)
+    // 保存所有卡片(单文件) — 只输出通过门控的卡片
     let all_cards_path = dir.join("all_cards.md");
-    let all_cards_content: Vec<String> = result
-        .cards
+    let all_cards_content: Vec<String> = accepted_cards
         .iter()
         .map(|c| {
             let mut card = c.clone();
@@ -172,6 +196,7 @@ pub async fn save_single(result: &CompilationResult, output_dir: &str) -> Result
         .collect();
     fs::write(&all_cards_path, all_cards_content.join("\n")).await?;
 
+    // 质量报告包含所有卡片（含被拦截的）
     let quality_path = dir.join("card_quality_report.md");
     fs::write(&quality_path, cards_quality_report(&result.cards)).await?;
 
@@ -248,7 +273,6 @@ pub async fn save_book(
 
     Ok(dir.to_string_lossy().to_string())
 }
-
 
 /// 保存单篇编译结果到指定目录（不创建新的带时间戳的目录）
 /// 保存单篇编译结果到指定目录
@@ -519,11 +543,7 @@ fn chunks_to_markdown(chunks: &[crate::models::ChunkInfo]) -> String {
 /// [M2] 去重：'"'、'/'、'\\' 在数组中已替换，不再单独替换
 pub fn sanitize_filename(name: &str) -> String {
     name.replace(['/', '\\', ':', '*', '?', '"', '<', '>', '|'], "_")
-        .replace('：', "_")
-        .replace('？', "_")
-        .replace('＜', "_")
-        .replace('＞', "_")
-        .replace('｜', "_")
+        .replace(['：', '？', '＜', '＞', '｜'], "_")
         .trim()
         .to_string()
 }

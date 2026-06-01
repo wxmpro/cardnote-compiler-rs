@@ -22,7 +22,7 @@ pub async fn cmd_doctor() -> Result<()> {
     let creds = crate::providers::scan_credentials();
     if !creds.is_empty() {
         println!("  Provider  {} (已配置 {} 个)", "✅".green(), creds.len());
-        for (_id, cred) in &creds {
+        for cred in creds.values() {
             let registry = crate::providers::ProviderRegistry::new();
             if let Some(provider) = registry.get(&cred.provider_id) {
                 let protocol_str = provider.protocol.as_str();

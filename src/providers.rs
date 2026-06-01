@@ -173,7 +173,8 @@ impl ProviderRegistry {
     /// 搜索路径：~/.config/cardnote/providers.default.json
     /// 若不存在，导出内置配置到该路径后加载
     fn load_default_config(&mut self) -> bool {
-        let default_path = shellexpand::tilde("~/.config/cardnote/providers.default.json").to_string();
+        let default_path =
+            shellexpand::tilde("~/.config/cardnote/providers.default.json").to_string();
         let path = std::path::Path::new(&default_path);
 
         // 若默认配置文件不存在，导出内置配置
@@ -187,13 +188,13 @@ impl ProviderRegistry {
             }
         }
 
-        if let Ok(content) = std::fs::read_to_string(path) {
-            if let Ok(providers) = serde_json::from_str::<Vec<Provider>>(&content) {
-                for p in providers {
-                    self.register(p);
-                }
-                return !self.providers.is_empty();
+        if let Ok(content) = std::fs::read_to_string(path)
+            && let Ok(providers) = serde_json::from_str::<Vec<Provider>>(&content)
+        {
+            for p in providers {
+                self.register(p);
             }
+            return !self.providers.is_empty();
         }
         false
     }
@@ -207,13 +208,13 @@ impl ProviderRegistry {
             "providers.json".to_string(),
         ];
         for path in &paths {
-            if let Ok(content) = std::fs::read_to_string(path) {
-                if let Ok(providers) = serde_json::from_str::<Vec<Provider>>(&content) {
-                    for p in providers {
-                        self.register(p); // 覆盖同名 Provider
-                    }
-                    return;
+            if let Ok(content) = std::fs::read_to_string(path)
+                && let Ok(providers) = serde_json::from_str::<Vec<Provider>>(&content)
+            {
+                for p in providers {
+                    self.register(p); // 覆盖同名 Provider
                 }
+                return;
             }
         }
     }
@@ -823,17 +824,15 @@ impl ProviderRegistry {
                 ".cardnote/providers.json".to_string(),
             ],
             description: "LPGPT 聚合模型平台".to_string(),
-            models: vec![
-                ModelInfo {
-                    id: "gpt-5.5".to_string(),
-                    name: "GPT 5.5".to_string(),
-                    context_length: 1_050_000,
-                    max_output_tokens: 128_000,
-                    supports_json_mode: true,
-                    supports_vision: true,
-                    description: "OpenAI GPT-5.5 via LPGPT".to_string(),
-                },
-            ],
+            models: vec![ModelInfo {
+                id: "gpt-5.5".to_string(),
+                name: "GPT 5.5".to_string(),
+                context_length: 1_050_000,
+                max_output_tokens: 128_000,
+                supports_json_mode: true,
+                supports_vision: true,
+                description: "OpenAI GPT-5.5 via LPGPT".to_string(),
+            }],
         });
 
         // Elysiver 聚合平台

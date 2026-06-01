@@ -29,6 +29,8 @@ use crate::config::{
 use crate::error::{AppError, Result};
 use crate::scan::{PdfStatus, find_ocr_project, inspect_pdf};
 
+// 注：convert_to_markdown_async_with_timeout 已提供外层 timeout 兜底
+
 /// 文本/PDF转换超时常量(秒)
 #[allow(dead_code)]
 const CONVERT_TIMEOUT_SECS: u64 = 300;
@@ -347,10 +349,10 @@ print("\n\n".join(pages))
 /// 查找 mineru 可执行文件路径
 fn find_mineru() -> Option<String> {
     // 1. 检查 $MINERU_PATH 环境变量
-    if let Ok(path) = std::env::var("MINERU_PATH") {
-        if std::path::Path::new(&path).exists() {
-            return Some(path);
-        }
+    if let Ok(path) = std::env::var("MINERU_PATH")
+        && std::path::Path::new(&path).exists()
+    {
+        return Some(path);
     }
 
     // 2. 尝试 PATH 中的 mineru
@@ -432,7 +434,7 @@ fn read_pdf_expert_ocr(file_path: &str) -> Result<String> {
     // 调用 batch_ocr.py
     eprintln!("  → 调用 pdf-expert-batch-ocr...");
     let result = Command::new("python3")
-        .args(&[
+        .args([
             batch_ocr_script.to_str().unwrap_or("batch_ocr.py"),
             "--queue",
             queue_path.to_str().unwrap_or(""),
@@ -1069,27 +1071,25 @@ pub fn extract_pdf_metadata(file_path: &str) -> BookMetadata {
     if let Ok(doc) = lopdf::Document::load(file_path) {
         meta.page_count = doc.get_pages().len();
 
-        if let Ok(info_ref) = doc.trailer.get(b"Info") {
-            if let lopdf::Object::Reference(id) = info_ref {
-                if let Ok(info_obj) = doc.get_object(*id) {
-                    if let Ok(info_dict) = info_obj.as_dict() {
-                        // Title：仅当非空且不是页码标记时才采用
-                        if let Ok(obj) = info_dict.get(b"Title") {
-                            let raw = pdf_string_value(obj);
-                            if !raw.trim().is_empty() && !looks_like_page_marker(&raw) {
-                                meta.title = raw;
-                            }
-                        }
-                        // Author
-                        if let Ok(obj) = info_dict.get(b"Author") {
-                            meta.author = pdf_string_value(obj);
-                        }
-                        // Subject / Publisher
-                        if let Ok(obj) = info_dict.get(b"Subject") {
-                            meta.publisher = pdf_string_value(obj);
-                        }
-                    }
+        if let Ok(info_ref) = doc.trailer.get(b"Info")
+            && let lopdf::Object::Reference(id) = info_ref
+            && let Ok(info_obj) = doc.get_object(*id)
+            && let Ok(info_dict) = info_obj.as_dict()
+        {
+            // Title：仅当非空且不是页码标记时才采用
+            if let Ok(obj) = info_dict.get(b"Title") {
+                let raw = pdf_string_value(obj);
+                if !raw.trim().is_empty() && !looks_like_page_marker(&raw) {
+                    meta.title = raw;
                 }
+            }
+            // Author
+            if let Ok(obj) = info_dict.get(b"Author") {
+                meta.author = pdf_string_value(obj);
+            }
+            // Subject / Publisher
+            if let Ok(obj) = info_dict.get(b"Subject") {
+                meta.publisher = pdf_string_value(obj);
             }
         }
     }
