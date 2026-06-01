@@ -2,13 +2,13 @@
 
 > 生成方式：grill-me 交互式决策拷问（Claude Code /grill-me Skill）
 > 生成时间：2026-06-01
-> 版本：**v2.0**（二次验收修订版）
-> 基于：[v1.0（共享理解确认版）](./grill-me-decisions-20250601.md)
+> 版本：**v0.1.25**（对齐代码基准 v0.1.25；二次验收修订版）
+> 基于：[v1.0（grill-me 初次生成版）](./grill-me-decisions-20250601.md)
 > 状态：待用户最终确认后冻结
 
 ---
 
-## v2.0 修订日志（vs v1.0）
+## v0.1.25 修订日志（vs v1.0）
 
 | # | 位置 | 修订内容 | 类型 |
 |---|------|---------|------|
@@ -371,7 +371,7 @@ LLM_FALLBACK_MODEL=minimax-m2.7
 
 ## 十二、确认签字
 
-本文档记录了 grill-me 交互式决策拷问的全部结果（v2.0 二次验收修订版）。以下决策需用户最终确认：
+本文档记录了 grill-me 交互式决策拷问的全部结果（v0.1.25 二次验收修订版）。以下决策需用户最终确认：
 
 - [ ] 全部决策准确无误，同意冻结
 - [ ] 有需要修正的决策（请标注）
@@ -383,4 +383,4 @@ LLM_FALLBACK_MODEL=minimax-m2.7
 
 ---
 
-*本文档由 Claude Code /grill-me Skill 生成，基于 cardnote-compiler-rs v0.1.24 代码库分析。v2.0 修订基于二次验收报告。*
+*本文档由 Claude Code /grill-me Skill 生成，基于 cardnote-compiler-rs v0.1.24 代码库分析。v0.1.25 修订基于二次验收报告。*
