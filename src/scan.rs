@@ -234,7 +234,7 @@ pub async fn scan_directory_async(
     })
 }
 
-fn find_pdf_files(dir: &str, recursive: bool) -> Result<Vec<PathBuf>> {
+pub fn find_pdf_files(dir: &str, recursive: bool) -> Result<Vec<PathBuf>> {
     let path = Path::new(dir);
     if !path.exists() {
         return Err(AppError::FileNotFound(dir.to_string()));

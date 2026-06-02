@@ -120,6 +120,22 @@ enum Commands {
         #[arg(short, long, default_value = "20")]
         threshold: usize,
     },
+    /// 批量处理目录中的所有 PDF
+    Batch {
+        /// PDF 目录路径
+        dir: String,
+        /// 断点续传（跳过已完成的）
+        #[arg(long)]
+        resume: bool,
+        /// 仅重试失败的作业
+        #[arg(long)]
+        retry_failed: bool,
+        /// 递归扫描子目录
+        #[arg(short, long)]
+        recursive: bool,
+    },
+    /// 查看批量处理进度
+    BatchStatus,
 }
 
 #[tokio::main]
@@ -187,6 +203,13 @@ async fn run() -> cardnote_compiler::error::Result<()> {
             recursive,
             threshold,
         }) => handle_scan(&dir, recursive, threshold).await,
+        Some(Commands::Batch {
+            dir,
+            resume,
+            retry_failed,
+            recursive,
+        }) => handle_batch(&dir, resume, retry_failed, recursive).await,
+        Some(Commands::BatchStatus) => handle_batch_status().await,
         None => handle_compile(cli).await,
     }
 }
@@ -501,5 +524,113 @@ async fn handle_phase(
     }
 
     println!("\n{} {} 完成", "✓".green(), phase);
+    Ok(())
+}
+
+// ═══════════════════════════════════════════════════════
+//  Batch 命令处理器
+// ═══════════════════════════════════════════════════════
+
+async fn handle_batch(
+    dir: &str,
+    resume: bool,
+    retry_failed: bool,
+    recursive: bool,
+) -> cardnote_compiler::error::Result<()> {
+    use cardnote_compiler::batch::BatchRunner;
+
+    let runner = BatchRunner::new()?;
+
+    if retry_failed {
+        let count = runner.reset_failed()?;
+        println!("  重置 {} 个失败作业为待处理", count);
+    } else if !resume {
+        let added = runner.populate(std::path::Path::new(dir), recursive)?;
+        println!("  扫描到 {} 个 PDF 文件", added);
+    }
+
+    let pending = runner.count_by_status(cardnote_compiler::batch::JobStatus::Pending)?;
+    let done = runner.count_by_status(cardnote_compiler::batch::JobStatus::Done)?;
+    let failed = runner.count_by_status(cardnote_compiler::batch::JobStatus::Failed)?;
+    println!(
+        "  作业状态: {} 待处理 / {} 已完成 / {} 失败",
+        pending, done, failed
+    );
+
+    if pending == 0 {
+        println!("  没有待处理的作业");
+        return Ok(());
+    }
+
+    println!("\n  开始逐本处理...\n");
+
+    let start = std::time::Instant::now();
+    let mut processed = 0;
+
+    while let Some(job) = runner.dequeue()? {
+        println!("  [{}/{}] {}", processed + 1, pending, job.file_path);
+        runner.mark_running(job.id)?;
+
+        match convert_to_markdown_async(&job.file_path).await {
+            Ok(document) => {
+                let client = cardnote_compiler::api::create_client(
+                    &std::env::var("LLM_PROVIDER").unwrap_or_else(|_| "deepseek".to_string()),
+                    &std::env::var("LLM_API_KEY").unwrap_or_default(),
+                    std::env::var("LLM_MODEL").ok(),
+                    std::env::var("LLM_BASE_URL").ok(),
+                )?;
+                let pipeline = cardnote_compiler::pipeline::Pipeline::new(client);
+                match pipeline.run(&document, &job.file_path).await {
+                    Ok(result) => {
+                        let out =
+                            cardnote_compiler::output::save_single(&result, "./output").await?;
+                        runner.mark_done(job.id, &out, result.cards.len())?;
+                        println!("    ✓ {} 张卡片 → {}", result.cards.len(), out);
+                    }
+                    Err(e) => {
+                        runner.mark_failed(job.id, &format!("编译失败: {}", e))?;
+                        println!("    ✗ {}", e);
+                    }
+                }
+            }
+            Err(e) => {
+                runner.mark_failed(job.id, &format!("转换失败: {}", e))?;
+                println!("    ✗ {}", e);
+            }
+        }
+
+        processed += 1;
+    }
+
+    let elapsed = start.elapsed();
+    println!("\n  ✓ 批量处理完成: {} 本, 耗时 {:?}", processed, elapsed);
+
+    // 显示失败详情
+    let failed_details = runner.failed_details()?;
+    if !failed_details.is_empty() {
+        println!("\n  失败作业:");
+        for detail in &failed_details {
+            println!("{}", detail);
+        }
+    }
+
+    Ok(())
+}
+
+async fn handle_batch_status() -> cardnote_compiler::error::Result<()> {
+    use cardnote_compiler::batch::BatchRunner;
+
+    let runner = BatchRunner::new()?;
+    let status = runner.status()?;
+    println!("{}", status);
+
+    let failed = runner.failed_details()?;
+    if !failed.is_empty() {
+        println!("\n失败详情:");
+        for detail in &failed {
+            println!("{}", detail);
+        }
+    }
+
     Ok(())
 }

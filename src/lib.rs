@@ -1,4 +1,5 @@
 pub mod api;
+pub mod batch;
 pub mod config;
 pub mod converter;
 pub mod dedup;

@@ -260,7 +260,70 @@ impl LlmClient {
             }
         }
 
+        // 所有重试失败后，尝试文本降级
+        if let Some(ref err) = last_error {
+            eprintln!("    ⚠ JSON 解析全部失败，尝试文本降级...");
+        }
         Err(last_error.unwrap_or_else(|| AppError::Api("JSON 请求全部重试失败".to_string())))
+    }
+
+    /// JSON 解析失败后的文本降级：从原始文本中提取有效内容
+    pub fn degrade_json_to_text(raw_text: &str) -> Option<Value> {
+        // 策略A: 去除 markdown code fence 后重试 JSON
+        if let Some(inner) = Self::extract_code_fence_json(raw_text) {
+            if let Ok(v) = serde_json::from_str::<Value>(&inner) {
+                return Some(v);
+            }
+        }
+        // 策略B: 检测卡片格式（含 --- 分隔符和 标题 字段）
+        if raw_text.contains("---") && raw_text.contains("标题") {
+            let cards: Vec<Value> = raw_text
+                .split("---")
+                .filter(|s| !s.trim().is_empty())
+                .filter_map(|block| {
+                    if block.contains("标题") {
+                        Some(serde_json::json!({
+                            "raw_card": block.trim().to_string()
+                        }))
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+            if !cards.is_empty() {
+                return Some(serde_json::json!({ "cards": cards }));
+            }
+        }
+        // 策略C: 兜底 — 包装为 raw_text
+        if !raw_text.trim().is_empty() {
+            return Some(serde_json::json!({ "raw_text": raw_text }));
+        }
+        None
+    }
+
+    /// 从文本中提取 markdown code fence 内的 JSON
+    fn extract_code_fence_json(text: &str) -> Option<String> {
+        let start_marker = "```json\n";
+        let alt_marker = "```\n";
+        // 优先找 ```json
+        if let Some(pos) = text.find(start_marker) {
+            let inner = &text[pos + start_marker.len()..];
+            if let Some(end) = inner.find("\n```") {
+                return Some(inner[..end].trim().to_string());
+            }
+        }
+        // 回退到普通 ```
+        if let Some(pos) = text.find(alt_marker) {
+            let inner = &text[pos + alt_marker.len()..];
+            if let Some(end) = inner.find("\n```") {
+                let candidate = inner[..end].trim().to_string();
+                // 只当内容看起来像 JSON 时才提取
+                if candidate.starts_with('{') || candidate.starts_with('[') {
+                    return Some(candidate);
+                }
+            }
+        }
+        None
     }
 
     /// 从响应中提取内容文本
