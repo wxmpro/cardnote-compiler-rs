@@ -464,7 +464,7 @@ async fn handle_compile(cli: Cli) -> cardnote_compiler::error::Result<()> {
                 (a, r + 1)
             }
         });
-        let version = tracker
+        let compilation_id = tracker
             .record(
                 &file,
                 &book_title,
@@ -481,9 +481,9 @@ async fn handle_compile(cli: Cli) -> cardnote_compiler::error::Result<()> {
                 &output_path,
             )
             .unwrap_or(0);
-        if version > 1 {
-            println!("  📝 编译记录已更新 (第 {} 版)", version);
-        }
+        // 写入卡片明细和实体
+        let _ = tracker.record_cards(compilation_id, &result.cards);
+        let _ = tracker.record_entities(compilation_id, &result.graph.entities);
     }
 
     let src_report = std::path::Path::new(&report_dir).join("input_quality_report.md");

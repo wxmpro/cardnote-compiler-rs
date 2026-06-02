@@ -68,7 +68,29 @@ impl CompileTracker {
                 UNIQUE(source_file, version)
             );
             CREATE INDEX IF NOT EXISTS idx_compilations_file ON compilations(source_file);
-            CREATE INDEX IF NOT EXISTS idx_compilations_date ON compilations(compiled_at);",
+            CREATE INDEX IF NOT EXISTS idx_compilations_date ON compilations(compiled_at);
+
+             CREATE TABLE IF NOT EXISTS cards (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                compilation_id INTEGER NOT NULL REFERENCES compilations(id),
+                unique_id TEXT NOT NULL,
+                title TEXT NOT NULL,
+                card_type TEXT NOT NULL,
+                quality_score REAL DEFAULT 1.0,
+                status TEXT DEFAULT 'Accepted',
+                reject_reason TEXT DEFAULT '',
+                ref_text TEXT DEFAULT ''
+            );
+            CREATE INDEX IF NOT EXISTS idx_cards_compilation ON cards(compilation_id);
+            CREATE INDEX IF NOT EXISTS idx_cards_type ON cards(card_type);
+
+             CREATE TABLE IF NOT EXISTS entities (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                compilation_id INTEGER NOT NULL REFERENCES compilations(id),
+                name TEXT NOT NULL,
+                entity_type TEXT DEFAULT ''
+            );
+            CREATE INDEX IF NOT EXISTS idx_entities_compilation ON entities(compilation_id);",
         )
         .map_err(|e| crate::error::AppError::TaskPanic(format!("无法创建编译记录表: {}", e)))?;
 
@@ -131,7 +153,7 @@ impl CompileTracker {
             )
             .map_err(|e| crate::error::AppError::TaskPanic(format!("记录编译结果失败: {}", e)))?;
 
-        Ok(version)
+        Ok(self.db.last_insert_rowid())
     }
 
     /// 获取最近 N 条编译记录
@@ -153,6 +175,80 @@ impl CompileTracker {
             .map_err(|e| crate::error::AppError::TaskPanic(format!("查询编译记录失败: {}", e)))?
             .filter_map(|r| r.ok())
             .collect())
+    }
+
+    /// 批量写入卡片明细
+    pub fn record_cards(
+        &self,
+        compilation_id: i64,
+        cards: &[crate::models::Card],
+    ) -> Result<usize> {
+        let mut count = 0;
+        let mut stmt = self
+            .db
+            .prepare(
+                "INSERT INTO cards (compilation_id, unique_id, title, card_type, quality_score, status, reject_reason, ref_text)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            )
+            .map_err(|e| crate::error::AppError::TaskPanic(format!("准备卡片插入失败: {}", e)))?;
+
+        for card in cards {
+            stmt.execute(rusqlite::params![
+                compilation_id,
+                card.unique_id,
+                card.title,
+                card.card_type.to_string(),
+                card.quality_score,
+                format!("{:?}", card.status),
+                card.reject_reason,
+                card.reference,
+            ])
+            .ok();
+            count += 1;
+        }
+        Ok(count)
+    }
+
+    /// 批量写入实体
+    pub fn record_entities(
+        &self,
+        compilation_id: i64,
+        entities: &[crate::models::Entity],
+    ) -> Result<usize> {
+        let mut count = 0;
+        let mut stmt = self
+            .db
+            .prepare("INSERT INTO entities (compilation_id, name, entity_type) VALUES (?1, ?2, ?3)")
+            .map_err(|e| crate::error::AppError::TaskPanic(format!("准备实体插入失败: {}", e)))?;
+
+        for entity in entities {
+            stmt.execute(rusqlite::params![
+                compilation_id,
+                entity.name,
+                entity.entity_type
+            ])
+            .ok();
+            count += 1;
+        }
+        Ok(count)
+    }
+
+    /// 获取某次编译的卡片统计
+    pub fn card_stats(&self, compilation_id: i64) -> Result<Vec<(String, i64)>> {
+        let mut stmt = self
+            .db
+            .prepare(
+                "SELECT card_type, COUNT(*) FROM cards WHERE compilation_id = ?1 GROUP BY card_type ORDER BY COUNT(*) DESC",
+            )
+            .map_err(|e| crate::error::AppError::TaskPanic(format!("查询卡片统计失败: {}", e)))?;
+
+        let rows = stmt
+            .query_map([compilation_id], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+            })
+            .map_err(|e| crate::error::AppError::TaskPanic(format!("查询卡片统计失败: {}", e)))?;
+
+        Ok(rows.filter_map(|r| r.ok()).collect())
     }
 
     /// 标记编译记录为已审阅
