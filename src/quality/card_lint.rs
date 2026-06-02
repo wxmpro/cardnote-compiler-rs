@@ -16,9 +16,12 @@ static RE_CITE_P: LazyLock<Regex> =
 static RE_P_DOT: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^(.+)_p\.(\d+)$").expect("硬编码正则"));
 static RE_AUTHOR_BOOK: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"^阳志平《([^》]+)》").expect("硬编码正则"));
+    LazyLock::new(|| Regex::new(r"^(?:\[[^\]]+\]\s*)?[^\s《]+《([^》]+)》").expect("硬编码正则"));
 static RE_AUTHOR_BOOK_FULL: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"^阳志平《([^》]+)》.*$").expect("硬编码正则"));
+    LazyLock::new(|| Regex::new(r"^(?:\[[^\]]+\]\s*)?[^\s《]+《([^》]+)》.*$").expect("硬编码正则"));
+static RE_AUTHOR_EN_BOOK: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^[A-Za-z][A-Za-z\s\.\-&;]+《([^》]+)》").expect("硬编码正则")
+});
 static RE_AUTHOR_YEAR: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^([^_]+)_\d{4}_.*$").expect("硬编码正则"));
 static RE_PAREN_BOOK: LazyLock<Regex> =
@@ -586,17 +589,23 @@ fn fix_ref_format(card: &mut Card, source_text: &str) {
         fixed = format!("{}_p{}", prefix, page);
     }
 
-    // ── 规则5: 阳志平《书名》..._p数字 → 书名_p数字 ──
-    // 去掉作者前缀，保留书名号内的书名
+    // ── 规则5: 任意作者《书名》..._p数字 → 书名_p数字 ──
+    // 去掉作者前缀（含 [国籍]、中英文名、音译名），保留书名号内的书名
     if let Some(caps) = RE_AUTHOR_BOOK.captures(&fixed) {
         let book_name = caps.get(1).unwrap().as_str().trim();
-        // 如果后面有 _p 后缀，保留
+        if let Some(p_idx) = fixed.rfind("_p") {
+            fixed = format!("{}{}", book_name, &fixed[p_idx..]);
+        }
+    }
+    // 英文作者变体
+    if let Some(caps) = RE_AUTHOR_EN_BOOK.captures(&fixed) {
+        let book_name = caps.get(1).unwrap().as_str().trim();
         if let Some(p_idx) = fixed.rfind("_p") {
             fixed = format!("{}{}", book_name, &fixed[p_idx..]);
         }
     }
 
-    // ── 规则6: 阳志平《书名》...（无 _p 后缀）→ 提取书名，尝试找页码 ──
+    // ── 规则6: 任意作者《书名》...（无 _p 后缀）→ 提取书名，尝试找页码 ──
     if RE_AUTHOR_BOOK_FULL.is_match(&fixed)
         && !fixed.contains("_p")
         && let Some(caps) = RE_AUTHOR_BOOK_FULL.captures(&fixed)
@@ -616,7 +625,7 @@ fn fix_ref_format(card: &mut Card, source_text: &str) {
         let author = caps.get(1).unwrap().as_str().trim();
         // 尝试从文本中查找该作者的引用页码
         if let Some(page) = find_author_page_in_source(author, source_text) {
-            fixed = format!("人生模式_p{}", page);
+            fixed = format!("{}_p{}", infer_book_name(source_text), page);
         }
     }
 
@@ -627,7 +636,7 @@ fn fix_ref_format(card: &mut Card, source_text: &str) {
     {
         let book = caps.get(1).unwrap().as_str().trim();
         if let Some(page) = find_book_page_in_source(book, source_text) {
-            fixed = format!("人生模式_p{}", page);
+            fixed = format!("{}_p{}", infer_book_name(source_text), page);
         }
     }
 
@@ -636,7 +645,7 @@ fn fix_ref_format(card: &mut Card, source_text: &str) {
     if !is_valid_v3_ref(&fixed) && !source_text.is_empty() {
         // 从卡片标题中提取关键概念词
         if let Some(page) = find_concept_page_by_title(&card.title, source_text) {
-            fixed = format!("人生模式_p{}", page);
+            fixed = format!("{}_p{}", infer_book_name(source_text), page);
         }
     }
 
