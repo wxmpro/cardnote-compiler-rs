@@ -42,6 +42,7 @@ impl RateLimiter {
             // 等待足够的 token 补充
             let needed = 1.0 - self.tokens;
             let wait_secs = needed / self.rate;
+            eprintln!("    ⏳ RPM 限流，等待 {:.1}s...", wait_secs);
             tokio::time::sleep(Duration::from_secs_f64(wait_secs)).await;
         }
     }

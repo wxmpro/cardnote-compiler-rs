@@ -257,16 +257,24 @@ fn sanitize_for_prompt(text: &str) -> String {
         "assistant:",
     ];
 
-    let mut sanitized = text.to_string();
+    // 先截断再净化：避免对超大文档做全文 to_string() 复制
+    let max_len = 200_000; // 约 100K tokens
+    let text = if text.len() > max_len {
+        // UTF-8 安全截断：找到 max_len 字节内最后一个完整 char 边界
+        let mut end = max_len;
+        while end > 0 && !text.is_char_boundary(end) {
+            end -= 1;
+        }
+        let mut truncated = text[..end].to_string();
+        truncated.push_str("\n\n[内容已截断...]");
+        truncated
+    } else {
+        text.to_string()
+    };
+
+    let mut sanitized = text;
     for pattern in &dangerous_patterns {
         sanitized = sanitized.replace(pattern, &"█".repeat(pattern.len()));
-    }
-
-    // 限制最大长度（防止超长内容消耗 token）
-    let max_len = 200_000; // 约 100K tokens
-    if sanitized.len() > max_len {
-        sanitized.truncate(max_len);
-        sanitized.push_str("\n\n[内容已截断...]");
     }
 
     sanitized
@@ -306,14 +314,11 @@ pub async fn generate_cards(
     generate_cards_legacy(document, doc_type, call_llm, load_prompt).await
 }
 
-/// 计算回退阈值：必选类型 min 之和的 50%
+/// 计算回退阈值：总规划 min 之和的 30%（覆盖必选+可选类型）
 fn min_cards_threshold(doc_type: DocumentType, char_count: usize) -> usize {
     let plan = CardPlanner::plan(doc_type, char_count);
-    plan.iter()
-        .filter(|p| p.required)
-        .map(|p| p.min)
-        .sum::<usize>()
-        / 2
+    let total_min: usize = plan.iter().map(|p| p.min).sum();
+    (total_min as f64 * 0.3) as usize
 }
 
 /// Extract-then-assign：2 次 LLM 调用替代 9 次

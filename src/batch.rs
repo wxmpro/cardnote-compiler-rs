@@ -188,15 +188,39 @@ impl BatchRunner {
         Ok(())
     }
 
-    /// 标记作业为失败
+    /// 标记作业为失败（自动过滤 API key 等敏感信息）
     pub fn mark_failed(&self, id: i64, error: &str) -> Result<()> {
+        let safe_error = Self::sanitize_error(error);
         self.db
             .execute(
                 "UPDATE jobs SET status = 'failed', error = ?1, retry_count = retry_count + 1 WHERE id = ?2",
-                rusqlite::params![error, id],
+                rusqlite::params![safe_error, id],
             )
             .map_err(|e| crate::error::AppError::TaskPanic(format!("更新作业状态失败: {}", e)))?;
         Ok(())
+    }
+
+    /// 过滤错误消息中的敏感信息（API key、token 等）
+    fn sanitize_error(error: &str) -> String {
+        let mut s = error.to_string();
+        // 过滤常见 API key 前缀模式: sk-, sk-or-, anthropic-, etc.
+        let patterns = [
+            ("sk-or-", "sk-***-"),
+            ("sk-", "sk-***"),
+            ("Bearer ", "Bearer ***"),
+        ];
+        for (pattern, replacement) in &patterns {
+            if let Some(pos) = s.find(pattern) {
+                let start = pos + pattern.len();
+                // 替换 key 部分为 *** (保留前缀供调试)
+                let end = s[start..]
+                    .find(|c: char| c.is_whitespace() || c == '"' || c == '\'')
+                    .map(|i| start + i)
+                    .unwrap_or(s.len());
+                s.replace_range(start..end, "***");
+            }
+        }
+        s
     }
 
     /// 将失败的作业重置为待处理（用于 --retry-failed）
