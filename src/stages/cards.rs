@@ -152,11 +152,11 @@ impl CardPlanner {
             CardPlanItem::new(CardType::Term, 2 * scale, 4 * scale, true, 2),
             CardPlanItem::new(CardType::Review, scale, 2 * scale, true, 3),
             CardPlanItem::new(CardType::CounterIntuit, scale, 3 * scale, true, 4),
-            CardPlanItem::new(CardType::Action, 1, 3, false, 5),
-            CardPlanItem::new(CardType::Person, 0, 2, false, 6),
-            CardPlanItem::new(CardType::Quote, 0, 3, false, 7),
-            CardPlanItem::new(CardType::Event, 0, 2, false, 8),
-            CardPlanItem::new(CardType::Index, 0, 2, false, 9),
+            CardPlanItem::new(CardType::Action, 1 * scale, 3 * scale, false, 5),
+            CardPlanItem::new(CardType::Person, 0, 2 * scale, false, 6),
+            CardPlanItem::new(CardType::Quote, 0, 3 * scale, false, 7),
+            CardPlanItem::new(CardType::Event, 0, 2 * scale, false, 8),
+            CardPlanItem::new(CardType::Index, 0, 2 * scale, false, 9),
         ]
     }
 
@@ -171,37 +171,45 @@ impl CardPlanner {
         vec![
             CardPlanItem::new(CardType::Term, 3 * scale, 5 * scale, true, 1),
             CardPlanItem::new(CardType::Knowledge, 2 * scale, 4 * scale, true, 2),
-            CardPlanItem::new(CardType::CounterIntuit, 1, 3, true, 3),
-            CardPlanItem::new(CardType::Review, 1, 2, true, 4),
-            CardPlanItem::new(CardType::Quote, 0, 2, false, 5),
-            CardPlanItem::new(CardType::Action, 0, 2, false, 6),
-            CardPlanItem::new(CardType::Event, 0, 1, false, 7),
+            CardPlanItem::new(CardType::CounterIntuit, 1 * scale, 3 * scale, true, 3),
+            CardPlanItem::new(CardType::Review, 1 * scale, 2 * scale, true, 4),
+            CardPlanItem::new(CardType::Quote, 0, 2 * scale, false, 5),
+            CardPlanItem::new(CardType::Action, 0, 2 * scale, false, 6),
+            CardPlanItem::new(CardType::Event, 0, 1 * scale, false, 7),
         ]
     }
 
     /// 手册规划：步骤指令多，优先行动卡、术语卡、图示卡、索引卡
     fn plan_manual(char_count: usize) -> Vec<CardPlanItem> {
-        let scale = if char_count > 35000 { 2 } else { 1 };
+        let scale = match char_count {
+            0..=35000 => 1,
+            35001..=100000 => 2,
+            _ => 3,
+        };
         vec![
             CardPlanItem::new(CardType::Action, 3 * scale, 6 * scale, true, 1),
             CardPlanItem::new(CardType::Term, 2 * scale, 4 * scale, true, 2),
-            CardPlanItem::new(CardType::Index, 1, 3, true, 3),
-            CardPlanItem::new(CardType::Graph, 0, 2, false, 4),
-            CardPlanItem::new(CardType::Knowledge, 0, 2, false, 5),
-            CardPlanItem::new(CardType::Note, 0, 2, false, 6),
+            CardPlanItem::new(CardType::Index, 1 * scale, 3 * scale, true, 3),
+            CardPlanItem::new(CardType::Graph, 0, 2 * scale, false, 4),
+            CardPlanItem::new(CardType::Knowledge, 0, 2 * scale, false, 5),
+            CardPlanItem::new(CardType::Note, 0, 3 * scale, false, 6),
         ]
     }
 
     /// 报告规划：数据导向，优先术语卡、行动卡、图示卡、索引卡
     fn plan_report(char_count: usize) -> Vec<CardPlanItem> {
-        let scale = if char_count > 40000 { 2 } else { 1 };
+        let scale = match char_count {
+            0..=40000 => 1,
+            40001..=120000 => 2,
+            _ => 3,
+        };
         vec![
             CardPlanItem::new(CardType::Term, 2 * scale, 4 * scale, true, 1),
             CardPlanItem::new(CardType::Action, 2 * scale, 4 * scale, true, 2),
-            CardPlanItem::new(CardType::Graph, 0, 2, true, 3),
-            CardPlanItem::new(CardType::Index, 0, 2, false, 4),
-            CardPlanItem::new(CardType::Review, 0, 2, false, 5),
-            CardPlanItem::new(CardType::Note, 0, 3, false, 6),
+            CardPlanItem::new(CardType::Graph, 0, 2 * scale, true, 3),
+            CardPlanItem::new(CardType::Index, 0, 2 * scale, false, 4),
+            CardPlanItem::new(CardType::Review, 0, 2 * scale, false, 5),
+            CardPlanItem::new(CardType::Note, 0, 3 * scale, false, 6),
         ]
     }
 

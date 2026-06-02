@@ -126,6 +126,11 @@ enum Commands {
         #[arg(short, long, default_value = "20")]
         limit: usize,
     },
+    /// 标记编译记录为已审阅
+    Review {
+        /// 编译记录 ID（从 cardc history 获取）
+        id: i64,
+    },
 }
 
 #[tokio::main]
@@ -194,6 +199,7 @@ async fn run() -> cardnote_compiler::error::Result<()> {
             threshold,
         }) => handle_scan(&dir, recursive, threshold).await,
         Some(Commands::History { limit }) => handle_history(limit).await,
+        Some(Commands::Review { id }) => handle_review(id).await,
         None => handle_compile(cli).await,
     }
 }
@@ -465,8 +471,8 @@ async fn handle_compile(cli: Cli) -> cardnote_compiler::error::Result<()> {
                 rejected,
                 result.graph.entities.len(),
                 result.graph.relations.len(),
-                prompt as u32,
-                completion as u32,
+                prompt,
+                completion,
                 &output_path,
             )
             .unwrap_or(0);
@@ -564,26 +570,14 @@ async fn handle_history(limit: usize) -> cardnote_compiler::error::Result<()> {
     let stats = tracker.stats()?;
     let records = tracker.recent(limit)?;
 
-    println!(
-        "{}",
-        "╔══════════════════════════════════════════════════════════════╗"
-    );
-    println!(
-        "{}",
-        "║               CardNote 编译历史                              ║"
-    );
-    println!(
-        "{}",
-        "╠══════════════════════════════════════════════════════════════╣"
-    );
+    println!("╔══════════════════════════════════════════════════════════════╗");
+    println!("║               CardNote 编译历史                              ║");
+    println!("╠══════════════════════════════════════════════════════════════╣");
     println!(
         "║  {} 本书 | {} 次编译 | {} 张卡片 | 待审阅 {} 本              ║",
         stats.unique_books, stats.total_compilations, stats.total_cards, stats.pending_review
     );
-    println!(
-        "{}",
-        "╚══════════════════════════════════════════════════════════════╝"
-    );
+    println!("╚══════════════════════════════════════════════════════════════╝");
 
     if records.is_empty() {
         println!("\n  暂无编译记录。运行 cardc <文件> 开始编译。");
@@ -605,5 +599,13 @@ async fn handle_history(limit: usize) -> cardnote_compiler::error::Result<()> {
         );
     }
 
+    Ok(())
+}
+
+async fn handle_review(id: i64) -> cardnote_compiler::error::Result<()> {
+    use cardnote_compiler::batch::CompileTracker;
+    let tracker = CompileTracker::new()?;
+    tracker.mark_reviewed(id)?;
+    println!("  ✓ 编译记录 #{} 已标记为已审阅", id);
     Ok(())
 }

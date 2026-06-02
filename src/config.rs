@@ -15,7 +15,7 @@ use crate::providers::{
 // ═══════════════════════════════════════════════════════
 
 /// 单块最大字符数，超过则启用 Map-Reduce
-pub const CHUNK_SIZE: usize = 50000;
+pub const CHUNK_SIZE: usize = 100000;
 /// 串行编译（避免触发 API 限流）
 /// [M4] 实际为串行，注释已修正以反映真实行为
 pub const MAX_WORKERS: usize = 1;

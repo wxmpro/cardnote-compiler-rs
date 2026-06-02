@@ -87,6 +87,8 @@ pub enum LintIssue {
     ReviewMissingSynthesis,
     /// ref 格式不符合规范
     InvalidRefFormat,
+    /// 卡片类型混淆（如术语卡标题是其他卡片类型的名称）
+    TypeConfusion,
 }
 
 impl std::fmt::Display for LintIssue {
@@ -123,6 +125,7 @@ impl std::fmt::Display for LintIssue {
             }
             LintIssue::ReviewMissingSynthesis => write!(f, "综述卡缺少跨主题连接"),
             LintIssue::InvalidRefFormat => write!(f, "ref格式不符合规范"),
+            LintIssue::TypeConfusion => write!(f, "卡片类型混淆：内容不属于该类型"),
         }
     }
 }
@@ -291,7 +294,7 @@ pub fn lint_card_with_source(
         ];
         for &ft in &forbidden_titles {
             if card.title.contains(ft) {
-                issues.push(LintIssue::InvalidRefFormat); // 标记为类型混淆
+                issues.push(LintIssue::TypeConfusion);
                 break;
             }
         }
@@ -320,6 +323,7 @@ pub fn lint_card_with_source(
                 | LintIssue::GraphMissingStructure
                 | LintIssue::IndexTooFewEntries { .. }
                 | LintIssue::InvalidRefFormat
+                | LintIssue::TypeConfusion
         )
     });
 
@@ -917,6 +921,7 @@ fn compute_card_quality_score(_card: &Card, issues: &[LintIssue]) -> f64 {
             // Critical: 每个扣 0.4
             LintIssue::EmptyTitle
             | LintIssue::InvalidRefFormat
+            | LintIssue::TypeConfusion
             | LintIssue::QuoteMissingSource
             | LintIssue::GraphMissingStructure
             | LintIssue::MissingEvidence

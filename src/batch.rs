@@ -176,6 +176,14 @@ impl CompileTracker {
             .collect())
     }
 
+    /// 标记编译记录为已审阅
+    pub fn mark_reviewed(&self, id: i64) -> Result<()> {
+        self.db
+            .execute("UPDATE compilations SET reviewed = 1 WHERE id = ?1", [id])
+            .map_err(|e| crate::error::AppError::TaskPanic(format!("标记审阅失败: {}", e)))?;
+        Ok(())
+    }
+
     /// 获取编译统计
     pub fn stats(&self) -> Result<CompileStats> {
         let total: i64 = self

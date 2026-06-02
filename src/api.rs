@@ -216,32 +216,35 @@ impl LlmClient {
 
         // 重试逻辑：最多 3 次，指数退避
         let mut last_error = None;
+        let mut last_raw_content: Option<String> = None;
         for attempt in 1..=3 {
             match self.send_request(request.clone()).await {
                 Ok(response) => match self.extract_content(&response) {
-                    Ok(content) => match serde_json::from_str::<Value>(&content) {
-                        Ok(json) => {
-                            // 检查是否为空对象或无 title 字段
-                            if json.as_object().is_some_and(|o| o.is_empty()) {
-                                let msg = "JSON 返回空对象 {}".to_string();
-                                eprintln!("    ⚠ JSON 验证失败 (尝试 {}/3): {}", attempt, msg);
+                    Ok(content) => {
+                        last_raw_content = Some(content.clone());
+                        match serde_json::from_str::<Value>(&content) {
+                            Ok(json) => {
+                                if json.as_object().is_some_and(|o| o.is_empty()) {
+                                    let msg = "JSON 返回空对象 {}".to_string();
+                                    eprintln!("    ⚠ JSON 验证失败 (尝试 {}/3): {}", attempt, msg);
+                                    last_error = Some(AppError::JsonParse(msg));
+                                } else if json.get("title").is_none()
+                                    && json.as_array().is_some_and(|a| a.is_empty())
+                                {
+                                    let msg = "JSON 返回缺少 title 字段且为空数组".to_string();
+                                    eprintln!("    ⚠ JSON 验证失败 (尝试 {}/3): {}", attempt, msg);
+                                    last_error = Some(AppError::JsonParse(msg));
+                                } else {
+                                    return Ok(json);
+                                }
+                            }
+                            Err(e) => {
+                                let msg = format!("content JSON 解析失败: {}", e);
+                                eprintln!("    ⚠ JSON 解析失败 (尝试 {}/3): {}", attempt, msg);
                                 last_error = Some(AppError::JsonParse(msg));
-                            } else if json.get("title").is_none()
-                                && json.as_array().is_some_and(|a| a.is_empty())
-                            {
-                                let msg = "JSON 返回缺少 title 字段且为空数组".to_string();
-                                eprintln!("    ⚠ JSON 验证失败 (尝试 {}/3): {}", attempt, msg);
-                                last_error = Some(AppError::JsonParse(msg));
-                            } else {
-                                return Ok(json);
                             }
                         }
-                        Err(e) => {
-                            let msg = format!("content JSON 解析失败: {}", e);
-                            eprintln!("    ⚠ JSON 解析失败 (尝试 {}/3): {}", attempt, msg);
-                            last_error = Some(AppError::JsonParse(msg));
-                        }
-                    },
+                    }
                     Err(e) => {
                         eprintln!("    ⚠ 内容提取失败 (尝试 {}/3): {}", attempt, e);
                         last_error = Some(e);
@@ -260,9 +263,12 @@ impl LlmClient {
             }
         }
 
-        // 所有重试失败
-        if last_error.is_some() {
-            eprintln!("    ⚠ JSON 解析全部失败...");
+        // 所有重试失败后，尝试文本降级
+        if let Some(raw) = last_raw_content {
+            if let Some(degraded) = Self::degrade_json_to_text(&raw) {
+                eprintln!("    ⚠ JSON 解析全部失败，已通过文本降级恢复");
+                return Ok(degraded);
+            }
         }
         Err(last_error.unwrap_or_else(|| AppError::Api("JSON 请求全部重试失败".to_string())))
     }
@@ -270,10 +276,10 @@ impl LlmClient {
     /// JSON 解析失败后的文本降级：从原始文本中提取有效内容
     pub fn degrade_json_to_text(raw_text: &str) -> Option<Value> {
         // 策略A: 去除 markdown code fence 后重试 JSON
-        if let Some(inner) = Self::extract_code_fence_json(raw_text) {
-            if let Ok(v) = serde_json::from_str::<Value>(&inner) {
-                return Some(v);
-            }
+        if let Some(inner) = Self::extract_code_fence_json(raw_text)
+            && let Ok(v) = serde_json::from_str::<Value>(&inner)
+        {
+            return Some(v);
         }
         // 策略B: 检测卡片格式（含 --- 分隔符和 标题 字段）
         if raw_text.contains("---") && raw_text.contains("标题") {
@@ -429,7 +435,7 @@ impl LlmClient {
         };
         let prompt: u32 = log.iter().map(|u| u.prompt_tokens).sum();
         let completion: u32 = log.iter().map(|u| u.completion_tokens).sum();
-        (prompt as u32, completion as u32)
+        (prompt, completion)
     }
 
     /// 清空用量日志

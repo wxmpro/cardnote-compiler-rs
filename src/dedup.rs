@@ -194,6 +194,9 @@ fn compute_similarity(a: &CardSignature, b: &CardSignature, config: &DedupConfig
 }
 
 /// 构建相似度图（邻接表表示）
+///
+/// 已知债务：当前实现为 O(n²) 全对比较。单文档场景（≤500张卡片，~100ms）可接受。
+/// 跨文档策展（>10万张卡片，~72天）需升级为 MinHash/LSH 等亚线性算法。
 fn build_similarity_graph(signatures: &[CardSignature], config: &DedupConfig) -> Vec<Vec<usize>> {
     let n = signatures.len();
     let mut graph: Vec<Vec<usize>> = vec![Vec::new(); n];
