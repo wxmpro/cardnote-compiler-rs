@@ -47,10 +47,23 @@ impl CompileTracker {
 
         db.execute_batch(
             "PRAGMA journal_mode=WAL;
+             CREATE TABLE IF NOT EXISTS books (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                source_file TEXT NOT NULL UNIQUE,
+                title TEXT NOT NULL DEFAULT '',
+                author TEXT DEFAULT '',
+                publisher TEXT DEFAULT '',
+                isbn TEXT DEFAULT '',
+                first_compiled_at TEXT DEFAULT (datetime('now')),
+                last_compiled_at TEXT DEFAULT (datetime('now')),
+                compile_count INTEGER NOT NULL DEFAULT 1,
+                last_success INTEGER NOT NULL DEFAULT 0
+            );
+            CREATE INDEX IF NOT EXISTS idx_books_title ON books(title);
+
              CREATE TABLE IF NOT EXISTS compilations (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                source_file TEXT NOT NULL,
-                book_title TEXT NOT NULL DEFAULT '',
+                book_id INTEGER NOT NULL REFERENCES books(id),
                 version INTEGER NOT NULL DEFAULT 1,
                 strategy TEXT DEFAULT '',
                 model TEXT DEFAULT '',
@@ -65,9 +78,9 @@ impl CompileTracker {
                 output_dir TEXT DEFAULT '',
                 reviewed INTEGER NOT NULL DEFAULT 0,
                 compiled_at TEXT NOT NULL DEFAULT (datetime('now')),
-                UNIQUE(source_file, version)
+                UNIQUE(book_id, version)
             );
-            CREATE INDEX IF NOT EXISTS idx_compilations_file ON compilations(source_file);
+            CREATE INDEX IF NOT EXISTS idx_compilations_book ON compilations(book_id);
             CREATE INDEX IF NOT EXISTS idx_compilations_date ON compilations(compiled_at);
 
              CREATE TABLE IF NOT EXISTS cards (
@@ -97,11 +110,46 @@ impl CompileTracker {
         Ok(Self { db })
     }
 
+    /// 确保书在 books 表中存在（不存在则 INSERT，存在则更新 last_compiled_at）
+    /// 返回 book_id
+    pub fn ensure_book(&self, source_file: &str, title: &str) -> Result<i64> {
+        self.db
+            .execute(
+                "INSERT INTO books (source_file, title) VALUES (?1, ?2)
+             ON CONFLICT(source_file) DO UPDATE SET
+                title = CASE WHEN books.title = '' THEN ?2 ELSE books.title END,
+                compile_count = compile_count + 1,
+                last_compiled_at = datetime('now')",
+                rusqlite::params![source_file, title],
+            )
+            .map_err(|e| crate::error::AppError::TaskPanic(format!("确保书籍记录失败: {}", e)))?;
+
+        let book_id: i64 = self
+            .db
+            .query_row(
+                "SELECT id FROM books WHERE source_file = ?1",
+                [source_file],
+                |row| row.get(0),
+            )
+            .map_err(|e| crate::error::AppError::TaskPanic(format!("查询书籍ID失败: {}", e)))?;
+
+        Ok(book_id)
+    }
+
+    /// 更新书的编译结果状态
+    pub fn update_book_status(&self, book_id: i64, success: bool) -> Result<()> {
+        self.db.execute(
+            "UPDATE books SET last_success = ?1, last_compiled_at = datetime('now') WHERE id = ?2",
+            rusqlite::params![success as i64, book_id],
+        ).map_err(|e| crate::error::AppError::TaskPanic(format!("更新书籍状态失败: {}", e)))?;
+        Ok(())
+    }
+
     /// 记录一次编译。同文件重复编译时版本号自动 +1（同步处理）
+    /// 返回 compilation_id
     pub fn record(
         &self,
-        source_file: &str,
-        book_title: &str,
+        book_id: i64,
         strategy: &str,
         model: &str,
         doc_chars: usize,
@@ -114,12 +162,11 @@ impl CompileTracker {
         completion_tokens: u32,
         output_dir: &str,
     ) -> Result<i64> {
-        // 查询该文件已有的最大版本号
         let max_version: i64 = self
             .db
             .query_row(
-                "SELECT COALESCE(MAX(version), 0) FROM compilations WHERE source_file = ?1",
-                [source_file],
+                "SELECT COALESCE(MAX(version), 0) FROM compilations WHERE book_id = ?1",
+                [book_id],
                 |row| row.get(0),
             )
             .unwrap_or(0);
@@ -129,14 +176,13 @@ impl CompileTracker {
         self.db
             .execute(
                 "INSERT INTO compilations
-                 (source_file, book_title, version, strategy, model, doc_chars,
+                 (book_id, version, strategy, model, doc_chars,
                   total_cards, accepted_cards, rejected_cards,
                   entity_count, relation_count,
                   prompt_tokens, completion_tokens, output_dir)
-                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)",
+                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13)",
                 rusqlite::params![
-                    source_file,
-                    book_title,
+                    book_id,
                     version,
                     strategy,
                     model,
@@ -161,12 +207,13 @@ impl CompileTracker {
         let mut stmt = self
             .db
             .prepare(
-                "SELECT id, source_file, book_title, version, strategy, model, doc_chars,
-                        total_cards, accepted_cards, rejected_cards,
-                        entity_count, relation_count,
-                        prompt_tokens, completion_tokens,
-                        output_dir, reviewed, compiled_at
-                 FROM compilations ORDER BY compiled_at DESC LIMIT ?1",
+                "SELECT c.id, b.source_file, b.title, c.version, c.strategy, c.model, c.doc_chars,
+                        c.total_cards, c.accepted_cards, c.rejected_cards,
+                        c.entity_count, c.relation_count,
+                        c.prompt_tokens, c.completion_tokens,
+                        c.output_dir, c.reviewed, c.compiled_at
+                 FROM compilations c JOIN books b ON c.book_id = b.id
+                 ORDER BY c.compiled_at DESC LIMIT ?1",
             )
             .map_err(|e| crate::error::AppError::TaskPanic(format!("查询编译记录失败: {}", e)))?;
 
@@ -267,11 +314,7 @@ impl CompileTracker {
             .unwrap_or(0);
         let unique_books: i64 = self
             .db
-            .query_row(
-                "SELECT COUNT(DISTINCT source_file) FROM compilations",
-                [],
-                |row| row.get(0),
-            )
+            .query_row("SELECT COUNT(*) FROM books", [], |row| row.get(0))
             .unwrap_or(0);
         let total_cards: i64 = self
             .db

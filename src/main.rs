@@ -464,10 +464,10 @@ async fn handle_compile(cli: Cli) -> cardnote_compiler::error::Result<()> {
                 (a, r + 1)
             }
         });
+        let book_id = tracker.ensure_book(&file, &book_title).unwrap_or(0);
         let compilation_id = tracker
             .record(
-                &file,
-                &book_title,
+                book_id,
                 strategy,
                 &client_for_usage.model,
                 document.chars().count(),
@@ -481,7 +481,8 @@ async fn handle_compile(cli: Cli) -> cardnote_compiler::error::Result<()> {
                 &output_path,
             )
             .unwrap_or(0);
-        // 写入卡片明细和实体
+        let success = !result.cards.is_empty();
+        let _ = tracker.update_book_status(book_id, success);
         let _ = tracker.record_cards(compilation_id, &result.cards);
         let _ = tracker.record_entities(compilation_id, &result.graph.entities);
     }
