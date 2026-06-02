@@ -110,17 +110,27 @@ impl CompileTracker {
         Ok(Self { db })
     }
 
-    /// 确保书在 books 表中存在（不存在则 INSERT，存在则更新 last_compiled_at）
-    /// 返回 book_id
-    pub fn ensure_book(&self, source_file: &str, title: &str) -> Result<i64> {
+    /// 确保书在 books 表中存在，同步写入/更新元数据。返回 book_id
+    pub fn ensure_book(
+        &self,
+        source_file: &str,
+        title: &str,
+        author: &str,
+        publisher: &str,
+        isbn: &str,
+    ) -> Result<i64> {
         self.db
             .execute(
-                "INSERT INTO books (source_file, title) VALUES (?1, ?2)
-             ON CONFLICT(source_file) DO UPDATE SET
-                title = CASE WHEN books.title = '' THEN ?2 ELSE books.title END,
-                compile_count = compile_count + 1,
-                last_compiled_at = datetime('now')",
-                rusqlite::params![source_file, title],
+                "INSERT INTO books (source_file, title, author, publisher, isbn)
+                 VALUES (?1, ?2, ?3, ?4, ?5)
+                 ON CONFLICT(source_file) DO UPDATE SET
+                    title = CASE WHEN books.title = '' OR books.title = '未命名' THEN ?2 ELSE books.title END,
+                    author = CASE WHEN books.author = '' THEN ?3 ELSE books.author END,
+                    publisher = CASE WHEN books.publisher = '' THEN ?4 ELSE books.publisher END,
+                    isbn = CASE WHEN books.isbn = '' THEN ?5 ELSE books.isbn END,
+                    compile_count = compile_count + 1,
+                    last_compiled_at = datetime('now')",
+                rusqlite::params![source_file, title, author, publisher, isbn],
             )
             .map_err(|e| crate::error::AppError::TaskPanic(format!("确保书籍记录失败: {}", e)))?;
 

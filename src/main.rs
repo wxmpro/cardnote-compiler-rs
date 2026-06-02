@@ -464,7 +464,16 @@ async fn handle_compile(cli: Cli) -> cardnote_compiler::error::Result<()> {
                 (a, r + 1)
             }
         });
-        let book_id = tracker.ensure_book(&file, &book_title).unwrap_or(0);
+        let pdf_meta = extract_pdf_metadata(&file);
+        let book_id = tracker
+            .ensure_book(
+                &file,
+                &book_title,
+                &pdf_meta.author,
+                &pdf_meta.publisher,
+                &pdf_meta.isbn,
+            )
+            .unwrap_or(0);
         let compilation_id = tracker
             .record(
                 book_id,
