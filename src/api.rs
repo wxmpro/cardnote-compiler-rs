@@ -274,7 +274,7 @@ impl LlmClient {
     }
 
     /// JSON 解析失败后的文本降级：从原始文本中提取有效内容
-    pub fn degrade_json_to_text(raw_text: &str) -> Option<Value> {
+    fn degrade_json_to_text(raw_text: &str) -> Option<Value> {
         // 策略A: 去除 markdown code fence 后重试 JSON
         if let Some(inner) = Self::extract_code_fence_json(raw_text)
             && let Ok(v) = serde_json::from_str::<Value>(&inner)

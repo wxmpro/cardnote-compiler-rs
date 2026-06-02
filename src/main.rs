@@ -577,6 +577,10 @@ async fn handle_history(limit: usize) -> cardnote_compiler::error::Result<()> {
         "║  {} 本书 | {} 次编译 | {} 张卡片 | 待审阅 {} 本              ║",
         stats.unique_books, stats.total_compilations, stats.total_cards, stats.pending_review
     );
+    println!(
+        "║  累计 {} tokens                                             ║",
+        stats.total_tokens
+    );
     println!("╚══════════════════════════════════════════════════════════════╝");
 
     if records.is_empty() {

@@ -154,28 +154,6 @@ impl CompileTracker {
             .collect())
     }
 
-    /// 获取某本书的所有版本记录
-    pub fn book_history(&self, source_file: &str) -> Result<Vec<CompileRecord>> {
-        let mut stmt = self
-            .db
-            .prepare(
-                "SELECT id, source_file, book_title, version, strategy, model, doc_chars,
-                        total_cards, accepted_cards, rejected_cards,
-                        entity_count, relation_count,
-                        prompt_tokens, completion_tokens,
-                        output_dir, reviewed, compiled_at
-                 FROM compilations WHERE source_file = ?1
-                 ORDER BY version DESC",
-            )
-            .map_err(|e| crate::error::AppError::TaskPanic(format!("查询编译记录失败: {}", e)))?;
-
-        Ok(stmt
-            .query_map([source_file], Self::map_row)
-            .map_err(|e| crate::error::AppError::TaskPanic(format!("查询编译记录失败: {}", e)))?
-            .filter_map(|r| r.ok())
-            .collect())
-    }
-
     /// 标记编译记录为已审阅
     pub fn mark_reviewed(&self, id: i64) -> Result<()> {
         self.db
