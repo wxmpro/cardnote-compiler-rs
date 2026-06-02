@@ -421,6 +421,17 @@ impl LlmClient {
         LlmUsage::format_report(&log)
     }
 
+    /// 获取累计 token 数（供编译记录用）
+    pub fn usage_totals(&self) -> (u32, u32) {
+        let log = match self.usage_log.lock() {
+            Ok(guard) => guard,
+            Err(_) => return (0, 0),
+        };
+        let prompt: u32 = log.iter().map(|u| u.prompt_tokens).sum();
+        let completion: u32 = log.iter().map(|u| u.completion_tokens).sum();
+        (prompt as u32, completion as u32)
+    }
+
     /// 清空用量日志
     pub fn clear_usage(&self) {
         if let Ok(mut log) = self.usage_log.lock() {

@@ -120,22 +120,12 @@ enum Commands {
         #[arg(short, long, default_value = "20")]
         threshold: usize,
     },
-    /// 批量处理目录中的所有 PDF
-    Batch {
-        /// PDF 目录路径
-        dir: String,
-        /// 断点续传（跳过已完成的）
-        #[arg(long)]
-        resume: bool,
-        /// 仅重试失败的作业
-        #[arg(long)]
-        retry_failed: bool,
-        /// 递归扫描子目录
-        #[arg(short, long)]
-        recursive: bool,
+    /// 查看历史编译记录
+    History {
+        /// 显示最近 N 条记录（默认 20）
+        #[arg(short, long, default_value = "20")]
+        limit: usize,
     },
-    /// 查看批量处理进度
-    BatchStatus,
 }
 
 #[tokio::main]
@@ -203,13 +193,7 @@ async fn run() -> cardnote_compiler::error::Result<()> {
             recursive,
             threshold,
         }) => handle_scan(&dir, recursive, threshold).await,
-        Some(Commands::Batch {
-            dir,
-            resume,
-            retry_failed,
-            recursive,
-        }) => handle_batch(&dir, resume, retry_failed, recursive).await,
-        Some(Commands::BatchStatus) => handle_batch_status().await,
+        Some(Commands::History { limit }) => handle_history(limit).await,
         None => handle_compile(cli).await,
     }
 }
@@ -327,6 +311,7 @@ async fn handle_compile(cli: Cli) -> cardnote_compiler::error::Result<()> {
     );
     println!();
 
+    let client_for_usage = client.clone();
     let pipeline = Pipeline::new(client);
 
     let path = Path::new(&file);
@@ -450,6 +435,46 @@ async fn handle_compile(cli: Cli) -> cardnote_compiler::error::Result<()> {
     };
     println!("\n结果已保存到: {}", output_path);
 
+    // 自动记录编译结果到 SQLite（同步，版本自增）
+    if let Ok(tracker) = cardnote_compiler::batch::CompileTracker::new() {
+        let title = resolve_book_title(&file, is_pdf, &result.summary.title);
+        let (prompt, completion) = client_for_usage.usage_totals();
+        let strategy = if document.chars().count() <= 200_000 {
+            "extract_then_assign"
+        } else {
+            "map_reduce"
+        };
+        let (accepted, rejected) = result.cards.iter().fold((0, 0), |(a, r), c| {
+            if c.status == cardnote_compiler::models::CardStatus::Accepted
+                && c.reject_reason.is_empty()
+            {
+                (a + 1, r)
+            } else {
+                (a, r + 1)
+            }
+        });
+        let version = tracker
+            .record(
+                &file,
+                &title,
+                strategy,
+                &client_for_usage.model,
+                document.chars().count(),
+                result.cards.len(),
+                accepted,
+                rejected,
+                result.graph.entities.len(),
+                result.graph.relations.len(),
+                prompt as u32,
+                completion as u32,
+                &output_path,
+            )
+            .unwrap_or(0);
+        if version > 1 {
+            println!("  📝 编译记录已更新 (第 {} 版)", version);
+        }
+    }
+
     let src_report = std::path::Path::new(&report_dir).join("input_quality_report.md");
     let dest_report = std::path::Path::new(&output_path).join("input_quality_report.md");
     if src_report.exists() {
@@ -528,108 +553,56 @@ async fn handle_phase(
 }
 
 // ═══════════════════════════════════════════════════════
-//  Batch 命令处理器
+// ═══════════════════════════════════════════════════════
+//  History 命令处理器
 // ═══════════════════════════════════════════════════════
 
-async fn handle_batch(
-    dir: &str,
-    resume: bool,
-    retry_failed: bool,
-    recursive: bool,
-) -> cardnote_compiler::error::Result<()> {
-    use cardnote_compiler::batch::BatchRunner;
+async fn handle_history(limit: usize) -> cardnote_compiler::error::Result<()> {
+    use cardnote_compiler::batch::CompileTracker;
 
-    let runner = BatchRunner::new()?;
+    let tracker = CompileTracker::new()?;
+    let stats = tracker.stats()?;
+    let records = tracker.recent(limit)?;
 
-    if retry_failed {
-        let count = runner.reset_failed()?;
-        println!("  重置 {} 个失败作业为待处理", count);
-    } else if !resume {
-        let added = runner.populate(std::path::Path::new(dir), recursive)?;
-        println!("  扫描到 {} 个 PDF 文件", added);
-    }
-
-    let pending = runner.count_by_status(cardnote_compiler::batch::JobStatus::Pending)?;
-    let done = runner.count_by_status(cardnote_compiler::batch::JobStatus::Done)?;
-    let failed = runner.count_by_status(cardnote_compiler::batch::JobStatus::Failed)?;
     println!(
-        "  作业状态: {} 待处理 / {} 已完成 / {} 失败",
-        pending, done, failed
+        "{}",
+        "╔══════════════════════════════════════════════════════════════╗"
+    );
+    println!(
+        "{}",
+        "║               CardNote 编译历史                              ║"
+    );
+    println!(
+        "{}",
+        "╠══════════════════════════════════════════════════════════════╣"
+    );
+    println!(
+        "║  {} 本书 | {} 次编译 | {} 张卡片 | 待审阅 {} 本              ║",
+        stats.unique_books, stats.total_compilations, stats.total_cards, stats.pending_review
+    );
+    println!(
+        "{}",
+        "╚══════════════════════════════════════════════════════════════╝"
     );
 
-    if pending == 0 {
-        println!("  没有待处理的作业");
+    if records.is_empty() {
+        println!("\n  暂无编译记录。运行 cardc <文件> 开始编译。");
         return Ok(());
     }
 
-    println!("\n  开始逐本处理...\n");
-
-    let start = std::time::Instant::now();
-    let mut processed = 0;
-
-    while let Some(job) = runner.dequeue()? {
-        println!("  [{}/{}] {}", processed + 1, pending, job.file_path);
-        runner.mark_running(job.id)?;
-
-        match convert_to_markdown_async(&job.file_path).await {
-            Ok(document) => {
-                let client = cardnote_compiler::api::create_client(
-                    &std::env::var("LLM_PROVIDER").unwrap_or_else(|_| "deepseek".to_string()),
-                    &std::env::var("LLM_API_KEY").unwrap_or_default(),
-                    std::env::var("LLM_MODEL").ok(),
-                    std::env::var("LLM_BASE_URL").ok(),
-                )?;
-                let pipeline = cardnote_compiler::pipeline::Pipeline::new(client);
-                match pipeline.run(&document, &job.file_path).await {
-                    Ok(result) => {
-                        let out =
-                            cardnote_compiler::output::save_single(&result, "./output").await?;
-                        runner.mark_done(job.id, &out, result.cards.len())?;
-                        println!("    ✓ {} 张卡片 → {}", result.cards.len(), out);
-                    }
-                    Err(e) => {
-                        runner.mark_failed(job.id, &format!("编译失败: {}", e))?;
-                        println!("    ✗ {}", e);
-                    }
-                }
-            }
-            Err(e) => {
-                runner.mark_failed(job.id, &format!("转换失败: {}", e))?;
-                println!("    ✗ {}", e);
-            }
-        }
-
-        processed += 1;
-    }
-
-    let elapsed = start.elapsed();
-    println!("\n  ✓ 批量处理完成: {} 本, 耗时 {:?}", processed, elapsed);
-
-    // 显示失败详情
-    let failed_details = runner.failed_details()?;
-    if !failed_details.is_empty() {
-        println!("\n  失败作业:");
-        for detail in &failed_details {
-            println!("{}", detail);
-        }
-    }
-
-    Ok(())
-}
-
-async fn handle_batch_status() -> cardnote_compiler::error::Result<()> {
-    use cardnote_compiler::batch::BatchRunner;
-
-    let runner = BatchRunner::new()?;
-    let status = runner.status()?;
-    println!("{}", status);
-
-    let failed = runner.failed_details()?;
-    if !failed.is_empty() {
-        println!("\n失败详情:");
-        for detail in &failed {
-            println!("{}", detail);
-        }
+    println!();
+    for r in &records {
+        let review_mark = if r.reviewed { "✓" } else { "○" };
+        println!(
+            "  {} v{} {}  {} → {}/{} 张 (通过/拦截) | {}",
+            review_mark,
+            r.version,
+            r.compiled_at,
+            r.book_title,
+            r.accepted_cards,
+            r.rejected_cards,
+            r.output_dir
+        );
     }
 
     Ok(())
