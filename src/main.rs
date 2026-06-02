@@ -396,7 +396,11 @@ async fn handle_compile(cli: Cli) -> cardnote_compiler::error::Result<()> {
         return Ok(());
     }
 
-    let result = pipeline.run(&document, &file).await?;
+    let book_title = resolve_book_title(&file, is_pdf, "");
+    // 自动注册到 .cardnote/books.json（如果还不存在）
+    cardnote_compiler::config::ensure_book_registered(&book_title);
+
+    let result = pipeline.run(&document, &file, &book_title).await?;
 
     // [C3] 编译结果健康检查：如果所有阶段都返回空值，提示用户可能存在失败
     if result.cards.is_empty()
@@ -415,7 +419,9 @@ async fn handle_compile(cli: Cli) -> cardnote_compiler::error::Result<()> {
         println!("   输出目录仍会创建，但文件内容可能为空。");
     }
 
+    // 使用 AI 摘要的标题更新（比文件名更准确），同时确保注册到 books.json
     let book_title = resolve_book_title(&file, is_pdf, &result.summary.title);
+    cardnote_compiler::config::ensure_book_registered(&book_title);
 
     let doc_dir = Path::new("./documents");
     tokio::fs::create_dir_all(&doc_dir).await.ok();
@@ -443,7 +449,6 @@ async fn handle_compile(cli: Cli) -> cardnote_compiler::error::Result<()> {
 
     // 自动记录编译结果到 SQLite（同步，版本自增）
     if let Ok(tracker) = cardnote_compiler::batch::CompileTracker::new() {
-        let title = resolve_book_title(&file, is_pdf, &result.summary.title);
         let (prompt, completion) = client_for_usage.usage_totals();
         let strategy = if document.chars().count() <= 200_000 {
             "extract_then_assign"
@@ -462,7 +467,7 @@ async fn handle_compile(cli: Cli) -> cardnote_compiler::error::Result<()> {
         let version = tracker
             .record(
                 &file,
-                &title,
+                &book_title,
                 strategy,
                 &client_for_usage.model,
                 document.chars().count(),
@@ -539,7 +544,7 @@ async fn handle_phase(
             println!("\n共识别 {} 个实体", entities.len());
         }
         "cards" => {
-            let cards = pipeline.run_cards(&document).await?;
+            let cards = pipeline.run_cards(&document, "未命名").await?;
             cardnote_compiler::output::save_cards_by_type(Path::new(output_dir), &cards).await?;
             println!("\n共生成 {} 张卡片", cards.len());
             println!("已保存到: {}/", output_dir);

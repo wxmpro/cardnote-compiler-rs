@@ -17,11 +17,11 @@ static RE_P_DOT: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^(.+)_p\.(\d+)$").expect("硬编码正则"));
 static RE_AUTHOR_BOOK: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^(?:\[[^\]]+\]\s*)?[^\s《]+《([^》]+)》").expect("硬编码正则"));
-static RE_AUTHOR_BOOK_FULL: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"^(?:\[[^\]]+\]\s*)?[^\s《]+《([^》]+)》.*$").expect("硬编码正则"));
-static RE_AUTHOR_EN_BOOK: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"^[A-Za-z][A-Za-z\s\.\-&;]+《([^》]+)》").expect("硬编码正则")
+static RE_AUTHOR_BOOK_FULL: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^(?:\[[^\]]+\]\s*)?[^\s《]+《([^》]+)》.*$").expect("硬编码正则")
 });
+static RE_AUTHOR_EN_BOOK: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^[A-Za-z][A-Za-z\s\.\-&;]+《([^》]+)》").expect("硬编码正则"));
 static RE_AUTHOR_YEAR: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^([^_]+)_\d{4}_.*$").expect("硬编码正则"));
 static RE_PAREN_BOOK: LazyLock<Regex> =
@@ -753,35 +753,82 @@ fn find_concept_page_by_title(title: &str, source_text: &str) -> Option<String> 
 
 /// 检查 ref 格式是否符合规范
 ///
-/// 支持两种格式：
-/// - v3 格式：`来源名_p页码`（如 `人生模式_p160`）
-/// 只接受 v3 格式：`来源名_p页码`
-/// 示例：人生模式_p160
+/// v3 格式：`来源名_p页码`（如 `人生模式_p160`）
+/// 不仅检查格式（_p+数字），还检查来源名是否合法（不能是作者名/代词/含标点等）
 fn check_ref_format(card: &Card, issues: &mut Vec<LintIssue>) {
     let ref_text = card.reference.trim();
 
-    // ref 不能为空
     if ref_text.is_empty() {
         issues.push(LintIssue::InvalidRefFormat);
         return;
     }
 
-    // 必须为 v3 格式：`来源名_p页码`
-    if !ref_text.contains("_p") {
+    // 提取 _p 前的来源名
+    let source_name = match ref_text.find("_p") {
+        Some(idx) => &ref_text[..idx],
+        None => {
+            issues.push(LintIssue::InvalidRefFormat);
+            return;
+        }
+    };
+
+    // 检查 _p 后面有数字
+    let after_p = &ref_text[source_name.len() + 2..];
+    if after_p.chars().next().is_none_or(|c| !c.is_ascii_digit()) {
         issues.push(LintIssue::InvalidRefFormat);
         return;
     }
 
-    // 检查 `_p` 后面是否有数字
-    if let Some(idx) = ref_text.find("_p") {
-        let after = &ref_text[idx + 2..];
-        if after.chars().next().is_some_and(|c| c.is_ascii_digit()) {
-            return; // v3 格式通过
+    // 来源名为空
+    if source_name.is_empty() {
+        issues.push(LintIssue::InvalidRefFormat);
+        return;
+    }
+
+    // 禁止：作者名前缀（含分号、音译点、英文名、国籍标注）
+    let forbidden_in_source: &[&str] = &["《", "》", "本书", "本书第", ";", "[", "]"];
+    for &f in forbidden_in_source {
+        if source_name.contains(f) {
+            issues.push(LintIssue::InvalidRefFormat);
+            return;
         }
     }
 
-    // _p 后面没有数字
-    issues.push(LintIssue::InvalidRefFormat);
+    // 禁止：纯英文字母来源名（如 George A.Kelly）— 必须是中文书名
+    // 允许数字/下划线（如 Result_20），只拦截纯拉丁字母组成的来源名
+    let has_cjk = source_name.chars().any(|c| c as u32 >= 0x4E00);
+    let is_pure_latin = source_name.chars().all(|c| {
+        c.is_ascii_alphabetic() || c.is_whitespace() || c == '.' || c == '-' || c == '&' || c == ';'
+    });
+    if !has_cjk && is_pure_latin && source_name.len() > 1 {
+        issues.push(LintIssue::InvalidRefFormat);
+        return;
+    }
+
+    // 禁止：来源名以此开头（常见的非书名模式）
+    let forbidden_prefixes = ["阳志平", "[法]", "[美]", "[英]", "[德]", "[日]", "（"];
+    for &prefix in &forbidden_prefixes {
+        if source_name.starts_with(prefix) {
+            issues.push(LintIssue::InvalidRefFormat);
+            return;
+        }
+    }
+
+    // 如果 .cardnote/books.json 存在，来源名必须在已知书名列表中
+    let books_path = std::path::Path::new(".cardnote/books.json");
+    if books_path.exists() {
+        let known = crate::config::known_book_names();
+        if !known.is_empty() {
+            let fuzzy_match = known.iter().any(|b| {
+                source_name == b.as_str()
+                    || source_name.contains(b.as_str())
+                    || b.contains(source_name)
+            });
+            if !fuzzy_match {
+                issues.push(LintIssue::InvalidRefFormat);
+            }
+        }
+    }
 }
 
 /// 检查类型化卡片结构要求

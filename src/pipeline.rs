@@ -442,9 +442,14 @@ impl Pipeline {
     }
 
     /// 运行完整编译流程
-    pub async fn run(&self, document: &str, source_file: &str) -> Result<CompilationResult> {
+    pub async fn run(
+        &self,
+        document: &str,
+        source_file: &str,
+        book_title: &str,
+    ) -> Result<CompilationResult> {
         println!("{}", "=".repeat(60));
-        println!("知识编译引擎启动");
+        println!("知识编译引擎启动 — 《{}》", book_title);
         println!("{}", "=".repeat(60));
         // [H3] 使用 chars().count() 获取真实字符数（中文不再虚高 3 倍）
         let doc_char_count = document.chars().count();
@@ -455,10 +460,10 @@ impl Pipeline {
 
         // [H3] 按字符数判断是否需要分块，与 CHUNK_SIZE 的语义（字符数）保持一致
         if document.chars().count() <= CHUNK_SIZE {
-            self.run_single(document, source_file, doc_detection.doc_type)
+            self.run_single(document, source_file, doc_detection.doc_type, book_title)
                 .await
         } else {
-            self.run_map_reduce(document, source_file, doc_detection.doc_type)
+            self.run_map_reduce(document, source_file, doc_detection.doc_type, book_title)
                 .await
         }
     }
@@ -484,12 +489,15 @@ impl Pipeline {
     }
 
     /// 仅运行 AI 卡片
-    pub async fn run_cards(&self, document: &str) -> Result<Vec<Card>> {
+    pub async fn run_cards(&self, document: &str, book_title: &str) -> Result<Vec<Card>> {
         println!("\n[阶段] AI 卡片 — 10 种卡片类型");
         println!("{}", "-".repeat(60));
         let ctx = &self.ctx;
         let doc_type = DocTypeDetector::detect(document);
-        let result = generate_cards(document, doc_type, ctx, &|name| ctx.load_prompt(name)).await?;
+        let result = generate_cards(document, doc_type, book_title, ctx, &|name| {
+            ctx.load_prompt(name)
+        })
+        .await?;
         println!("  ✓ 生成 {} 张卡片", result.len());
         Ok(result)
     }
@@ -511,6 +519,7 @@ impl Pipeline {
         document: &str,
         source_file: &str,
         doc_type: DocumentType,
+        book_title: &str,
     ) -> Result<CompilationResult> {
         println!("\n[模式] 单轮全量编译");
         println!("{}", "-".repeat(60));
@@ -578,7 +587,7 @@ impl Pipeline {
 
         // 卡片阶段
         let cards = match with_retry("卡片", || {
-            generate_cards(document, doc_type, ctx, &load_prompt)
+            generate_cards(document, doc_type, book_title, ctx, &load_prompt)
         })
         .await
         {
@@ -669,6 +678,7 @@ impl Pipeline {
         document: &str,
         source_file: &str,
         doc_type: DocumentType,
+        book_title: &str,
     ) -> Result<CompilationResult> {
         println!("\n[模式] 分块 Map-Reduce 编译（阈值: {} 字符）", CHUNK_SIZE);
         println!("{}", "-".repeat(60));
@@ -723,9 +733,10 @@ impl Pipeline {
             let ctx = self.ctx.clone();
             let (title, doc) = chunks[idx].clone();
             println!("  处理块 {}/{}...", idx + 1, chunks_len);
+            let bt = book_title.to_string();
             handles.push(tokio::spawn(async move {
                 let _permit = permit;
-                let result = compile_chunk(ctx, doc, title, doc_type).await;
+                let result = compile_chunk(ctx, doc, title, doc_type, bt).await;
                 (idx, result)
             }));
         }
@@ -784,7 +795,15 @@ impl Pipeline {
                 if let Some((title, doc)) = chunks_for_retry.get(*idx) {
                     println!("  重试块 {}/{}...", idx + 1, chunks_len);
                     let ctx = self.ctx.clone();
-                    match compile_chunk(ctx, doc.clone(), title.clone(), doc_type).await {
+                    match compile_chunk(
+                        ctx,
+                        doc.clone(),
+                        title.clone(),
+                        doc_type,
+                        book_title.to_string(),
+                    )
+                    .await
+                    {
                         Ok(result) => {
                             println!(
                                 "  ✓ 块 {}/{} 重试成功 — 实体 {} 个 | 卡片 {} 张",
@@ -1071,6 +1090,7 @@ async fn compile_chunk(
     document: String,
     title_path: String,
     doc_type: DocumentType,
+    book_title: String,
 ) -> Result<ChunkResult> {
     let ctx_ref = &ctx;
     let load_prompt = |name: &str| ctx_ref.load_prompt(name);
@@ -1087,7 +1107,7 @@ async fn compile_chunk(
     )?;
 
     let cards = with_retry("卡片", || {
-        generate_cards(&document, doc_type, ctx_ref, &load_prompt)
+        generate_cards(&document, doc_type, &book_title, ctx_ref, &load_prompt)
     })
     .await?;
 

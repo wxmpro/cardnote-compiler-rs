@@ -654,10 +654,10 @@ pub fn get_provider_label(provider: &str) -> String {
 //  书籍配置（运行时加载，无需重新编译）
 // ═══════════════════════════════════════════════════════
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 /// 书籍配置（从 .cardnote/books.json 加载）
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct BookConfig {
     pub name: String,
     #[serde(default)]
@@ -975,6 +975,29 @@ fn load_density_markers() -> std::result::Result<DensityMarkers, String> {
 
 pub fn density_markers() -> &'static DensityMarkers {
     &DENSITY_MARKERS
+}
+
+/// 确保书名已在 .cardnote/books.json 中注册（不存在则追加）
+pub fn ensure_book_registered(book_name: &str) {
+    if book_name.is_empty() || book_name == "未命名" {
+        return;
+    }
+    let mut books = load_books_config();
+    let already_exists = books
+        .iter()
+        .any(|b| b.name == book_name || b.aliases.contains(&book_name.to_string()));
+    if !already_exists {
+        books.push(BookConfig {
+            name: book_name.to_string(),
+            aliases: vec![book_name.to_string()],
+            author: None,
+        });
+        // 写回文件
+        if let Ok(json) = serde_json::to_string_pretty(&books) {
+            let _ = std::fs::create_dir_all(".cardnote");
+            let _ = std::fs::write(".cardnote/books.json", json);
+        }
+    }
 }
 
 /// 读取 RPM 限流配置（未设置时返回 None，不限流）

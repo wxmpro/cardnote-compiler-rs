@@ -292,6 +292,7 @@ fn sanitize_for_prompt(text: &str) -> String {
 pub async fn generate_cards(
     document: &str,
     doc_type: DocumentType,
+    book_title: &str,
     call_llm: impl ChatFn,
     load_prompt: &(dyn Fn(&str) -> Result<String> + Send + Sync),
 ) -> Result<Vec<Card>> {
@@ -299,7 +300,15 @@ pub async fn generate_cards(
 
     // 文档 ≤ 200K 字符时尝试新策略
     if chars <= 200_000 {
-        match generate_cards_extract_then_assign(document, doc_type, &call_llm, load_prompt).await {
+        match generate_cards_extract_then_assign(
+            document,
+            doc_type,
+            book_title,
+            &call_llm,
+            load_prompt,
+        )
+        .await
+        {
             Ok(cards) if cards.len() >= min_cards_threshold(doc_type, chars) => {
                 eprintln!(
                     "    ✓ Extract-then-assign: {} 张卡片 (2次调用)",
@@ -320,7 +329,8 @@ pub async fn generate_cards(
         }
     }
 
-    let cards = generate_cards_legacy(document, doc_type, call_llm, load_prompt).await?;
+    let cards =
+        generate_cards_legacy(document, doc_type, book_title, call_llm, load_prompt).await?;
     check_type_coverage(&cards, doc_type, chars);
     Ok(cards)
 }
@@ -380,6 +390,7 @@ fn check_type_coverage(cards: &[Card], doc_type: DocumentType, char_count: usize
 async fn generate_cards_extract_then_assign(
     document: &str,
     doc_type: DocumentType,
+    book_title: &str,
     call_llm: &impl ChatFn,
     load_prompt: &(dyn Fn(&str) -> Result<String> + Send + Sync),
 ) -> Result<Vec<Card>> {
@@ -389,14 +400,15 @@ async fn generate_cards_extract_then_assign(
     // Step 1: 提取所有知识点
     let extract_prompt = load_prompt("extract_knowledge")
         .unwrap_or_else(|_| load_prompt("all_cards").unwrap_or_default())
-        .replace("{document}", &safe_document);
+        .replace("{document}", &safe_document)
+        .replace("{book_title}", book_title);
 
     let extraction = call_llm
         .call_chat(
             vec![
                 LlmMessage {
                     role: "system".to_string(),
-                    content: "你是知识提取专家。严格按 JSON 格式输出。".to_string(),
+                    content: format!("你是知识提取专家。当前书籍：《{book_title}》。ref 字段必须使用此书名。严格按 JSON 格式输出。"),
                 },
                 LlmMessage {
                     role: "user".to_string(),
@@ -440,15 +452,15 @@ async fn generate_cards_extract_then_assign(
             "{knowledge_points}",
             &serde_json::to_string_pretty(&knowledge_points).unwrap_or_default(),
         )
-        .replace("{card_plan}", &card_plan);
+        .replace("{card_plan}", &card_plan)
+        .replace("{book_title}", book_title);
 
     let response = call_llm
         .call_chat(
             vec![
                 LlmMessage {
                     role: "system".to_string(),
-                    content: "你是卡片笔记分类专家。按格式要求输出每张卡片，用 --- 分隔。"
-                        .to_string(),
+                    content: format!("你是卡片笔记分类专家。当前书籍：《{book_title}》。ref 必须使用此书名。按格式要求输出每张卡片，用 --- 分隔。"),
                 },
                 LlmMessage {
                     role: "user".to_string(),
@@ -473,6 +485,7 @@ async fn generate_cards_extract_then_assign(
 async fn generate_cards_legacy(
     document: &str,
     doc_type: DocumentType,
+    book_title: &str,
     call_llm: impl ChatFn,
     load_prompt: &(dyn Fn(&str) -> Result<String> + Send + Sync),
 ) -> Result<Vec<Card>> {
@@ -502,9 +515,13 @@ async fn generate_cards_legacy(
             }
         };
 
-        let prompt = prompt_template.replace("{document}", &safe_document);
+        let prompt = prompt_template
+            .replace("{document}", &safe_document)
+            .replace("{book_title}", book_title);
         let system = format!(
-            "你是一位以卡片笔记为信仰的知识炼金术士。当前任务：生成{}。请严格遵循 Prompt 中的格式要求输出。",
+            "你是一位以卡片笔记为信仰的知识炼金术士。
+            当前书籍：《{book_title}》。（ref 字段必须使用此书名，严禁用作者名、'本书'、国籍标注替代）
+            当前任务：生成{}。请严格遵循 Prompt 中的格式要求输出。",
             CardPlanner::card_type_name(&item.card_type)
         );
 
