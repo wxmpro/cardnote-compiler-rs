@@ -272,8 +272,147 @@ fn sanitize_for_prompt(text: &str) -> String {
     sanitized
 }
 
-/// 生成所有类型的卡片（分类型调用单类型 Prompt）
+/// 生成所有类型的卡片（混合策略：先尝试 Extract-Then-Assign，失败回退到分类型）
 pub async fn generate_cards(
+    document: &str,
+    doc_type: DocumentType,
+    call_llm: impl ChatFn,
+    load_prompt: &(dyn Fn(&str) -> Result<String> + Send + Sync),
+) -> Result<Vec<Card>> {
+    let chars = document.chars().count();
+
+    // 文档 ≤ 200K 字符时尝试新策略
+    if chars <= 200_000 {
+        match generate_cards_extract_then_assign(document, doc_type, &call_llm, load_prompt).await {
+            Ok(cards) if cards.len() >= min_cards_threshold(doc_type, chars) => {
+                eprintln!(
+                    "    ✓ Extract-then-assign: {} 张卡片 (2次调用)",
+                    cards.len()
+                );
+                return Ok(cards);
+            }
+            Ok(cards) => {
+                eprintln!(
+                    "    ⚠ Extract-then-assign 仅 {} 张 (<阈值), 回退到分类型策略",
+                    cards.len()
+                );
+            }
+            Err(e) => {
+                eprintln!("    ⚠ Extract-then-assign 失败: {}, 回退到分类型策略", e);
+            }
+        }
+    }
+
+    generate_cards_legacy(document, doc_type, call_llm, load_prompt).await
+}
+
+/// 计算回退阈值：必选类型 min 之和的 50%
+fn min_cards_threshold(doc_type: DocumentType, char_count: usize) -> usize {
+    let plan = CardPlanner::plan(doc_type, char_count);
+    plan.iter()
+        .filter(|p| p.required)
+        .map(|p| p.min)
+        .sum::<usize>()
+        / 2
+}
+
+/// Extract-then-assign：2 次 LLM 调用替代 9 次
+/// Step 1: 一次调用提取所有知识点
+/// Step 2: 将知识点按类型分配并生成卡片
+async fn generate_cards_extract_then_assign(
+    document: &str,
+    doc_type: DocumentType,
+    call_llm: &impl ChatFn,
+    load_prompt: &(dyn Fn(&str) -> Result<String> + Send + Sync),
+) -> Result<Vec<Card>> {
+    let safe_document = sanitize_for_prompt(document);
+    let card_plan = CardPlanner::plan_text(doc_type, document.chars().count());
+
+    // Step 1: 提取所有知识点
+    let extract_prompt = load_prompt("extract_knowledge")
+        .unwrap_or_else(|_| load_prompt("all_cards").unwrap_or_default())
+        .replace("{document}", &safe_document);
+
+    let extraction = call_llm
+        .call_chat(
+            vec![
+                LlmMessage {
+                    role: "system".to_string(),
+                    content: "你是知识提取专家。严格按 JSON 格式输出。".to_string(),
+                },
+                LlmMessage {
+                    role: "user".to_string(),
+                    content: extract_prompt,
+                },
+            ],
+            Some(doc_limits_for(document.chars().count()).compile_output as u32),
+        )
+        .await?;
+
+    // 尝试解析 JSON，失败则尝试从文本中提取
+    let knowledge_points = match serde_json::from_str::<serde_json::Value>(&extraction) {
+        Ok(json) => json
+            .get("knowledge_points")
+            .and_then(|v| v.as_array())
+            .cloned()
+            .unwrap_or_default(),
+        Err(_) => {
+            // 尝试从文本中提取知识点（每行一个标题+内容）
+            let mut points = Vec::new();
+            for line in extraction.lines() {
+                let line = line.trim();
+                if line.starts_with("- ") || line.starts_with("* ") {
+                    points.push(serde_json::json!({"title": line[2..].to_string()}));
+                }
+            }
+            points
+        }
+    };
+
+    if knowledge_points.is_empty() {
+        return Err(crate::error::AppError::TaskPanic(
+            "Extract-then-assign: 未提取到知识点".to_string(),
+        ));
+    }
+
+    // Step 2: 按类型分配并生成卡片
+    let assign_prompt = load_prompt("assign_cards")
+        .unwrap_or_else(|_| load_prompt("all_cards").unwrap_or_default())
+        .replace(
+            "{knowledge_points}",
+            &serde_json::to_string_pretty(&knowledge_points).unwrap_or_default(),
+        )
+        .replace("{card_plan}", &card_plan);
+
+    let response = call_llm
+        .call_chat(
+            vec![
+                LlmMessage {
+                    role: "system".to_string(),
+                    content: "你是卡片笔记分类专家。按格式要求输出每张卡片，用 --- 分隔。"
+                        .to_string(),
+                },
+                LlmMessage {
+                    role: "user".to_string(),
+                    content: assign_prompt,
+                },
+            ],
+            Some(doc_limits_for(document.chars().count()).compile_output as u32),
+        )
+        .await?;
+
+    // 解析分配的卡片（从 #卡片类型 标签检测类型）
+    let mut cards = parse_assigned_cards(&response)?;
+
+    for card in cards.iter_mut() {
+        card.unique_id = uuid::Uuid::now_v7().to_string();
+    }
+
+    Ok(cards)
+}
+
+/// 旧策略：9 次独立 LLM 调用（保留作为 fallback）
+async fn generate_cards_legacy(
     document: &str,
     doc_type: DocumentType,
     call_llm: impl ChatFn,
@@ -281,11 +420,8 @@ pub async fn generate_cards(
 ) -> Result<Vec<Card>> {
     let plan = CardPlanner::plan(doc_type, document.chars().count());
     let mut all_cards = Vec::new();
-
-    // 安全净化文档内容
     let safe_document = sanitize_for_prompt(document);
 
-    // 处理所有规划类型（不再区分必选/可选）
     for item in plan.iter() {
         let prompt_name = card_type_prompt_name(&item.card_type);
         let prompt_template = match load_prompt(prompt_name) {
@@ -295,7 +431,6 @@ pub async fn generate_cards(
                     "    ⚠ 未找到 Prompt '{}': {}, 尝试 fallback",
                     prompt_name, e
                 );
-                // Fallback 到 all_cards 通用格式
                 match load_prompt("all_cards") {
                     Ok(fallback) => {
                         eprintln!("    → 使用 all_cards.md 作为 fallback");
@@ -310,7 +445,6 @@ pub async fn generate_cards(
         };
 
         let prompt = prompt_template.replace("{document}", &safe_document);
-
         let system = format!(
             "你是一位以卡片笔记为信仰的知识炼金术士。当前任务：生成{}。请严格遵循 Prompt 中的格式要求输出。",
             CardPlanner::card_type_name(&item.card_type)
@@ -346,16 +480,134 @@ pub async fn generate_cards(
                 continue;
             }
         };
-
         all_cards.extend(cards);
     }
 
-    // 使用 UUIDv7 生成唯一 ID（时间排序 + 无全局状态 + 无碰撞）
     for card in all_cards.iter_mut() {
         card.unique_id = uuid::Uuid::now_v7().to_string();
     }
 
     Ok(all_cards)
+}
+
+/// 解析 Extract-Then-Assign 输出的卡片，从 #类型 标签自动检测 card_type
+fn parse_assigned_cards(response: &str) -> Result<Vec<Card>> {
+    let mut cards = Vec::new();
+    let card_blocks: Vec<&str> = response
+        .split("---")
+        .filter(|s| !s.trim().is_empty())
+        .collect();
+
+    for block in card_blocks {
+        let block = block.trim();
+        if block.is_empty() {
+            continue;
+        }
+
+        // 从 #类型 标签检测卡片类型
+        let detected_type = detect_card_type_from_tag(block);
+
+        let title = extract_field(block, "标题").unwrap_or_default();
+        let reference = extract_field(block, "ref").unwrap_or_default();
+        let original_text = extract_field(block, "原文").unwrap_or_default();
+        let source = extract_field(block, "出处").unwrap_or_default();
+        let paraphrase = extract_field(block, "仿写").unwrap_or_default();
+
+        let content = build_card_content(block);
+
+        if !title.is_empty() {
+            let source = if detected_type == Some(CardType::Quote)
+                && source.is_empty()
+                && !reference.is_empty()
+            {
+                reference.clone()
+            } else {
+                source
+            };
+            cards.push(Card {
+                title,
+                content,
+                card_type: detected_type.unwrap_or(CardType::Knowledge),
+                reference,
+                unique_id: String::new(),
+                original_text,
+                source,
+                paraphrase,
+                related_cards: Vec::new(),
+                source_file: String::new(),
+                chunk_id: String::new(),
+                evidence: String::new(),
+                location: String::new(),
+                quality_score: 1.0,
+                status: CardStatus::Accepted,
+                reject_reason: String::new(),
+                retry_count: 0,
+                degraded_from: None,
+            });
+        }
+    }
+
+    Ok(cards)
+}
+
+/// 从卡片块中检测 #卡片类型 标签
+fn detect_card_type_from_tag(block: &str) -> Option<CardType> {
+    let first_line = block.lines().next().unwrap_or("").trim();
+    match first_line {
+        s if s.contains("术语卡") => Some(CardType::Term),
+        s if s.contains("新知卡") => Some(CardType::Knowledge),
+        s if s.contains("反常识卡") => Some(CardType::CounterIntuit),
+        s if s.contains("金句卡") => Some(CardType::Quote),
+        s if s.contains("人物卡") => Some(CardType::Person),
+        s if s.contains("事件卡") => Some(CardType::Event),
+        s if s.contains("行动卡") => Some(CardType::Action),
+        s if s.contains("图示卡") => Some(CardType::Graph),
+        s if s.contains("新词卡") => Some(CardType::NewWord),
+        s if s.contains("综述卡") => Some(CardType::Review),
+        s if s.contains("基础卡") | s.contains("笔记卡") => Some(CardType::Note),
+        s if s.contains("索引卡") => Some(CardType::Index),
+        _ => None,
+    }
+}
+
+/// 构建卡片内容（排除标题/ref/uuid/标签行）
+fn build_card_content(block: &str) -> String {
+    let mut lines = Vec::new();
+    let mut started = false;
+
+    for line in block.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() && !started {
+            continue;
+        }
+
+        // 跳过标签行
+        if trimmed.starts_with('#') && (trimmed.contains("卡") || trimmed.contains("卡片")) {
+            continue;
+        }
+        // 跳过标题和 ref 字段行
+        if (trimmed.starts_with("标题") || trimmed.starts_with("ref"))
+            && (trimmed.contains('：') || trimmed.contains(':'))
+        {
+            continue;
+        }
+        // 跳过 uuid 行
+        if (trimmed.starts_with("uuid") || trimmed.starts_with("唯一编码"))
+            && (trimmed.contains('：') || trimmed.contains(':'))
+        {
+            continue;
+        }
+
+        started = true;
+        lines.push(line);
+    }
+
+    // 去掉尾部空行
+    while lines.last().is_some_and(|l| l.trim().is_empty()) {
+        lines.pop();
+    }
+
+    lines.join("\n").trim().to_string()
 }
 
 /// 解析单类型卡片响应

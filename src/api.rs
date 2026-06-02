@@ -260,9 +260,9 @@ impl LlmClient {
             }
         }
 
-        // 所有重试失败后，尝试文本降级
-        if let Some(ref err) = last_error {
-            eprintln!("    ⚠ JSON 解析全部失败，尝试文本降级...");
+        // 所有重试失败
+        if last_error.is_some() {
+            eprintln!("    ⚠ JSON 解析全部失败...");
         }
         Err(last_error.unwrap_or_else(|| AppError::Api("JSON 请求全部重试失败".to_string())))
     }
