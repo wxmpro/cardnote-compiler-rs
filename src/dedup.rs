@@ -442,7 +442,17 @@ fn extract_unique_sentences(content: &str, unique_shingles: &HashSet<String>) ->
 
 /// 快速去重（保留API兼容性，使用默认配置）
 pub fn dedup_cards(cards: &[Card]) -> Vec<Card> {
-    let config = DedupConfig::default();
+    // 根据平均内容长度自适应选择 shingle 配置
+    let avg_len = if cards.is_empty() {
+        0
+    } else {
+        cards
+            .iter()
+            .map(|c| c.content.chars().count())
+            .sum::<usize>()
+            / cards.len()
+    };
+    let config = adaptive_dedup_config(avg_len);
     let result = semantic_dedup(cards, &config);
 
     if result.stats.removed_count > 0 {
