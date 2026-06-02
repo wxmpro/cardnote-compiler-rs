@@ -305,6 +305,7 @@ pub async fn generate_cards(
                     "    ✓ Extract-then-assign: {} 张卡片 (2次调用)",
                     cards.len()
                 );
+                check_type_coverage(&cards, doc_type, chars);
                 return Ok(cards);
             }
             Ok(cards) => {
@@ -319,14 +320,58 @@ pub async fn generate_cards(
         }
     }
 
-    generate_cards_legacy(document, doc_type, call_llm, load_prompt).await
+    let cards = generate_cards_legacy(document, doc_type, call_llm, load_prompt).await?;
+    check_type_coverage(&cards, doc_type, chars);
+    Ok(cards)
 }
 
 /// 计算回退阈值：总规划 min 之和的 30%（覆盖必选+可选类型）
 fn min_cards_threshold(doc_type: DocumentType, char_count: usize) -> usize {
     let plan = CardPlanner::plan(doc_type, char_count);
     let total_min: usize = plan.iter().map(|p| p.min).sum();
-    (total_min as f64 * 0.3) as usize
+    // 至少 1 张，防止 Article/Unknown 等小类型整数截断归零
+    ((total_min as f64 * 0.3) as usize).max(1)
+}
+
+/// 检查卡片类型覆盖：必选类型是否达到 min 数量，缺失类型输出警告
+fn check_type_coverage(cards: &[Card], doc_type: DocumentType, char_count: usize) {
+    let plan = CardPlanner::plan(doc_type, char_count);
+    let mut missing = Vec::new();
+    let mut under_min = Vec::new();
+
+    for item in &plan {
+        if !item.required || item.min == 0 {
+            continue;
+        }
+        let count = cards
+            .iter()
+            .filter(|c| c.card_type == item.card_type)
+            .count();
+        if count == 0 {
+            missing.push((CardPlanner::card_type_name(&item.card_type), item.min));
+        } else if count < item.min {
+            under_min.push((
+                CardPlanner::card_type_name(&item.card_type),
+                count,
+                item.min,
+            ));
+        }
+    }
+
+    if !missing.is_empty() {
+        let names: Vec<_> = missing
+            .iter()
+            .map(|(n, m)| format!("{}(需≥{})", n, m))
+            .collect();
+        eprintln!("    ⚠ 类型覆盖缺失: {}", names.join(", "));
+    }
+    if !under_min.is_empty() {
+        let names: Vec<_> = under_min
+            .iter()
+            .map(|(n, c, m)| format!("{}({}/{})", n, c, m))
+            .collect();
+        eprintln!("    ⚠ 类型产出不足: {}", names.join(", "));
+    }
 }
 
 /// Extract-then-assign：2 次 LLM 调用替代 9 次

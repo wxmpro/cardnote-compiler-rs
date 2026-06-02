@@ -676,6 +676,11 @@ impl Pipeline {
         // 1. Split
         println!("\n[1/4] 语义分块...");
         let chunks = self.semantic_chunk(document);
+        if chunks.is_empty() {
+            return Err(AppError::TaskPanic(
+                "文档分块后无有效内容，可能是空文档或格式无法解析".to_string(),
+            ));
+        }
         let chunks_len = chunks.len();
         println!("  分成 {} 个语义块", chunks_len);
 

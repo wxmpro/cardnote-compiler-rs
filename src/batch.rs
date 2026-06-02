@@ -46,7 +46,8 @@ impl CompileTracker {
         })?;
 
         db.execute_batch(
-            "CREATE TABLE IF NOT EXISTS compilations (
+            "PRAGMA journal_mode=WAL;
+             CREATE TABLE IF NOT EXISTS compilations (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 source_file TEXT NOT NULL,
                 book_title TEXT NOT NULL DEFAULT '',
