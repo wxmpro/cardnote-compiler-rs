@@ -576,8 +576,7 @@ fn fix_ref_format(card: &mut Card, source_text: &str) {
     if let Some(caps) = RE_CITE_P.captures(&fixed) {
         let prefix = caps.get(1).unwrap().as_str();
         let page = caps.get(2).unwrap().as_str();
-        // 去掉"阳志平"前缀，提取书名号内的内容
-        let prefix = prefix.trim_start_matches("阳志平").trim();
+        let prefix = prefix.trim();
         let book = extract_book_name(prefix);
         fixed = format!("{}_p{}", book, page);
     }
@@ -806,7 +805,9 @@ fn check_ref_format(card: &Card, issues: &mut Vec<LintIssue>) {
     }
 
     // 禁止：来源名以此开头（常见的非书名模式）
-    let forbidden_prefixes = ["阳志平", "[法]", "[美]", "[英]", "[德]", "[日]", "（"];
+    let forbidden_prefixes = [
+        "[法]", "[美]", "[英]", "[德]", "[日]", "[中]", "[意]", "[奥]", "[俄]", "（",
+    ];
     for &prefix in &forbidden_prefixes {
         if source_name.starts_with(prefix) {
             issues.push(LintIssue::InvalidRefFormat);

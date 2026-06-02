@@ -49,3 +49,4 @@ venv/
 .idea/
 .vscode/
 .claude/
+tests/
