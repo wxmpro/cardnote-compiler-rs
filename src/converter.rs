@@ -21,6 +21,16 @@ static H2_RE: LazyLock<Regex> =
 static HEADING_PREFIX_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^#\s+").expect("硬编码正则应始终有效"));
 
+/// 预编译正则：匹配"第 X 页/章/节/篇"
+static PAGE_CHAPTER_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"第\s*\d+\s*[页章节篇]").expect("硬编码正则应始终有效")
+});
+
+/// 预编译正则：匹配英文 Page/Chapter/Section/Part + 数字
+static ENG_MARKER_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)^(Page|Chapter|Section|Part)\s*\d+").expect("硬编码正则应始终有效")
+});
+
 use crate::config::{
     MAX_FILE_SIZE_MB, MAX_TEXT_FILE_STREAM_MB, PDF_CONVERT_TIMEOUT, PDF_FALLBACK_MIN_TEXT,
     PDF_LARGE_FILE_MB, PDF_SPLIT_PAGES_DEFAULT, PDF_TOC_MIN_ENTRIES, is_other_format,
@@ -52,21 +62,30 @@ fn check_file_size(path: &Path) -> Result<u64> {
 
 /// 将任意输入文件转换为 Markdown 文本（同步）
 pub fn convert_to_markdown(file_path: &str) -> Result<String> {
-    // 路径安全验证：禁止 null 字节，规范化路径
-    if file_path.contains('\0') {
-        return Err(AppError::FileNotFound("路径包含非法字符".to_string()));
+    // 路径安全验证：禁止 null 字节，禁止路径遍历
+    if file_path.contains('\0') || file_path.contains("..") {
+        return Err(AppError::FileNotFound(
+            "路径包含非法字符或路径遍历尝试".to_string(),
+        ));
     }
     let path = Path::new(file_path);
     if !path.exists() {
         return Err(AppError::FileNotFound(file_path.to_string()));
     }
 
-    // OOM 防护：检查文件大小
-    let _file_mb = check_file_size(path)?;
+    // 规范化路径：消除符号链接和相对路径，确保是绝对路径
+    let canonical = std::fs::canonicalize(path)
+        .map_err(|e| AppError::FileNotFound(format!("路径规范化失败: {}", e)))?;
+    let file_path = canonical.to_str().ok_or_else(|| {
+        AppError::FileNotFound("路径包含非法字符".to_string())
+    })?;
+
+    // OOM 防护：检查文件大小（使用规范化后的路径）
+    let _file_mb = check_file_size(&canonical)?;
 
     let suffix = format!(
         ".{}",
-        path.extension().and_then(|e| e.to_str()).unwrap_or("")
+        canonical.extension().and_then(|e| e.to_str()).unwrap_or("")
     )
     .to_lowercase();
 
@@ -1134,14 +1153,12 @@ fn looks_like_page_marker(s: &str) -> bool {
     }
 
     // 模式2：包含 "第 x 页" / "第 x 章"
-    let page_chapter = regex::Regex::new(r"第\s*\d+\s*[页章节篇]").unwrap();
-    if page_chapter.is_match(trimmed) {
+    if PAGE_CHAPTER_RE.is_match(trimmed) {
         return true;
     }
 
     // 模式3：英文 Page / Chapter + 数字
-    let eng_marker = regex::Regex::new(r"(?i)^(Page|Chapter|Section|Part)\s*\d+").unwrap();
-    if eng_marker.is_match(trimmed) {
+    if ENG_MARKER_RE.is_match(trimmed) {
         return true;
     }
 

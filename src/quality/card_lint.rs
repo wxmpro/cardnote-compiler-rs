@@ -29,6 +29,10 @@ static RE_PAREN_BOOK: LazyLock<Regex> =
 static RE_EXTRACT_BOOK: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"《([^》]+)》").expect("硬编码正则"));
 
+/// 预编译：匹配页码标题 "## 第 N 页"（用于源文本页码搜索）
+static PAGE_HEADING_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"## 第 (\d+) 页").expect("硬编码正则应始终有效"));
+
 // [M1] 已知书名列表（运行时从 .cardnote/books.json 加载，不再硬编码）
 
 /// 卡片质量检查配置
@@ -696,32 +700,34 @@ fn extract_book_name(prefix: &str) -> String {
     }
 }
 
-/// 从源文本中搜索书名出现的页码
-fn find_book_page_in_source(book_name: &str, source_text: &str) -> Option<String> {
-    if source_text.is_empty() {
+/// 从源文本中搜索关键词出现的页码
+///
+/// 使用预编译正则定位页码标记，然后用字符串搜索检查附近内容，
+/// 避免在热路径中每次动态编译 Regex。
+fn find_keyword_page_in_source(keyword: &str, source_text: &str, scan_window: usize) -> Option<String> {
+    if source_text.is_empty() || keyword.is_empty() {
         return None;
     }
-    let re = Regex::new(&format!(
-        r"## 第 (\d+) 页[\s\S]{{0,500}}?{}",
-        regex::escape(book_name)
-    ))
-    .unwrap();
-    re.captures(source_text)
-        .map(|caps| caps.get(1).unwrap().as_str().to_string())
+    for caps in PAGE_HEADING_RE.captures_iter(source_text) {
+        let page_match = caps.get(0)?;
+        let page_str = caps.get(1)?.as_str();
+        let scan_end = (page_match.start() + scan_window).min(source_text.len());
+        let scan = &source_text[page_match.start()..scan_end];
+        if scan.contains(keyword) {
+            return Some(page_str.to_string());
+        }
+    }
+    None
+}
+
+/// 从源文本中搜索书名出现的页码
+fn find_book_page_in_source(book_name: &str, source_text: &str) -> Option<String> {
+    find_keyword_page_in_source(book_name, source_text, 500)
 }
 
 /// 从源文本中搜索作者名出现的页码
 fn find_author_page_in_source(author: &str, source_text: &str) -> Option<String> {
-    if source_text.is_empty() {
-        return None;
-    }
-    let re = Regex::new(&format!(
-        r"## 第 (\d+) 页[\s\S]{{0,500}}?{}",
-        regex::escape(author)
-    ))
-    .unwrap();
-    re.captures(source_text)
-        .map(|caps| caps.get(1).unwrap().as_str().to_string())
+    find_keyword_page_in_source(author, source_text, 500)
 }
 
 /// 从源文本中根据卡片标题搜索概念名出现的页码
@@ -729,7 +735,7 @@ fn find_concept_page_by_title(title: &str, source_text: &str) -> Option<String> 
     if source_text.is_empty() {
         return None;
     }
-    // 从标题中提取关键词（去掉标点，取前8个字符）
+    // 从标题中提取关键词（去掉标点，取前2个）
     let keywords: Vec<&str> = title
         .split(|c: char| c.is_ascii_punctuation() || c == '，' || c == '？' || c == '！')
         .map(|s| s.trim())
@@ -738,13 +744,8 @@ fn find_concept_page_by_title(title: &str, source_text: &str) -> Option<String> 
         .collect();
 
     for kw in &keywords {
-        let re = Regex::new(&format!(
-            r"(?i)## 第 (\d+) 页[\s\S]{{0,1000}}?{}",
-            regex::escape(kw)
-        ))
-        .unwrap();
-        if let Some(caps) = re.captures(source_text) {
-            return Some(caps.get(1).unwrap().as_str().to_string());
+        if let Some(page) = find_keyword_page_in_source(kw, source_text, 1000) {
+            return Some(page);
         }
     }
     None

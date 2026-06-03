@@ -8,8 +8,6 @@ use colored::Colorize;
 use reqwest::Client;
 use serde_json::Value;
 
-use std::sync::Mutex;
-
 use crate::config::get_provider_config;
 use crate::error::{AppError, Result};
 use crate::models::{LlmMessage, LlmRequest, LlmUsage, ResponseFormat};
@@ -34,7 +32,7 @@ pub struct LlmClient {
     /// [C1] 改用 AtomicUsize 避免 async 上下文中阻塞 tokio worker
     current_model_idx: Arc<AtomicUsize>,
     /// 累积的 LLM 调用用量统计
-    usage_log: Arc<Mutex<Vec<LlmUsage>>>,
+    usage_log: Arc<tokio::sync::Mutex<Vec<LlmUsage>>>,
     /// RPM 限流器（未配置 CARDNOTE_MAX_RPM 时为 None）
     rate_limiter: Option<Arc<tokio::sync::Mutex<RateLimiter>>>,
 }
@@ -62,7 +60,7 @@ impl LlmClient {
             provider_id,
             fallback_models,
             current_model_idx: Arc::new(AtomicUsize::new(0)),
-            usage_log: Arc::new(Mutex::new(Vec::new())),
+            usage_log: Arc::new(tokio::sync::Mutex::new(Vec::new())),
             rate_limiter,
         })
     }
@@ -400,10 +398,10 @@ impl LlmClient {
     }
 
     /// 记录一次调用用量（内存 + 文件持久化）
-    pub fn record_usage(&self, usage: LlmUsage) {
-        if let Ok(mut log) = self.usage_log.lock() {
-            log.push(usage.clone());
-        }
+    pub async fn record_usage(&self, usage: LlmUsage) {
+        let mut log = self.usage_log.lock().await;
+        log.push(usage.clone());
+        drop(log); // 显式释放锁，避免持有锁期间做 IO
 
         // 持久化到文件（追加模式，JSON Lines）
         if let Ok(json) = serde_json::to_string(&usage) {
@@ -419,30 +417,23 @@ impl LlmClient {
     }
 
     /// 获取累积的用量报告
-    pub fn usage_report(&self) -> String {
-        let log = match self.usage_log.lock() {
-            Ok(guard) => guard,
-            Err(_) => return "⚠ 用量统计不可用".to_string(),
-        };
+    pub async fn usage_report(&self) -> String {
+        let log = self.usage_log.lock().await;
         LlmUsage::format_report(&log)
     }
 
     /// 获取累计 token 数（供编译记录用）
-    pub fn usage_totals(&self) -> (u32, u32) {
-        let log = match self.usage_log.lock() {
-            Ok(guard) => guard,
-            Err(_) => return (0, 0),
-        };
+    pub async fn usage_totals(&self) -> (u32, u32) {
+        let log = self.usage_log.lock().await;
         let prompt: u32 = log.iter().map(|u| u.prompt_tokens).sum();
         let completion: u32 = log.iter().map(|u| u.completion_tokens).sum();
         (prompt, completion)
     }
 
     /// 清空用量日志
-    pub fn clear_usage(&self) {
-        if let Ok(mut log) = self.usage_log.lock() {
-            log.clear();
-        }
+    pub async fn clear_usage(&self) {
+        let mut log = self.usage_log.lock().await;
+        log.clear();
     }
 
     /// 发送 HTTP 请求（内部自动记录 Token 用量和延迟）
@@ -473,7 +464,7 @@ impl LlmClient {
 
         let latency_ms = start.elapsed().as_millis() as u64;
         let usage = self.extract_usage(&body, latency_ms);
-        self.record_usage(usage);
+        self.record_usage(usage).await;
 
         if !status.is_success() {
             let error_msg = body

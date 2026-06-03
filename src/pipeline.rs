@@ -20,6 +20,21 @@ use crate::stages::entities::{extract_entities, unify_entities};
 use crate::stages::graph::{build_graph, merge_relations, update_relation_endpoints};
 use crate::stages::summary::{generate_summary, merge_summaries};
 
+// ═══════════════════════════════════════════════════════
+//  共享 FNV-1a 哈希函数
+// ═══════════════════════════════════════════════════════
+
+/// 稳定的 FNV-1a 字符串哈希
+/// [M5] 使用稳定的 FNV-1a 哈希，避免 Rust 版本升级后 DefaultHasher 变化导致缓存全部失效
+fn fnv1a_hash_str(data: &str) -> String {
+    let mut hash: u64 = 0xcbf29ce484222325;
+    for byte in data.bytes() {
+        hash ^= byte as u64;
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    format!("{:x}", hash)
+}
+
 /// 分块编译结果（内部使用）
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 struct ChunkResult {
@@ -47,14 +62,8 @@ impl CompileCache {
     const CACHE_DIR: &'static str = ".cardc_cache";
 
     /// 计算文档哈希
-    /// [M5] 使用稳定的 FNV-1a 哈希，避免 Rust 版本升级后 DefaultHasher 变化导致缓存全部失效
     fn hash_document(document: &str) -> String {
-        let mut hash: u64 = 0xcbf29ce484222325; // FNV-1a 偏移基值
-        for byte in document.bytes() {
-            hash ^= byte as u64;
-            hash = hash.wrapping_mul(0x100000001b3); // FNV-1a 质数
-        }
-        format!("{:x}", hash)
+        fnv1a_hash_str(document)
     }
 
     /// 获取缓存文件路径
@@ -143,12 +152,7 @@ impl StageCache {
 
     /// FNV-1a 哈希
     fn fnv1a_hash(data: &str) -> String {
-        let mut hash: u64 = 0xcbf29ce484222325;
-        for byte in data.bytes() {
-            hash ^= byte as u64;
-            hash = hash.wrapping_mul(0x100000001b3);
-        }
-        format!("{:x}", hash)
+        fnv1a_hash_str(data)
     }
 
     /// 缓存文件路径
@@ -304,14 +308,7 @@ impl CompileContext {
 
     /// 获取文档哈希（首次计算，后续从缓存返回）
     fn get_doc_hash(&self, document: &str) -> &str {
-        self.document_hash.get_or_init(|| {
-            let mut hash: u64 = 0xcbf29ce484222325;
-            for byte in document.bytes() {
-                hash ^= byte as u64;
-                hash = hash.wrapping_mul(0x100000001b3);
-            }
-            format!("{:x}", hash)
-        })
+        self.document_hash.get_or_init(|| fnv1a_hash_str(document))
     }
 
     /// 尝试加载阶段缓存（使用缓存的文档哈希）
@@ -658,8 +655,10 @@ impl Pipeline {
         }
         println!("{}", "=".repeat(60));
 
-        // 输出 LLM 用量报告
-        println!("\n{}", ctx.client.usage_report());
+        // 输出 LLM 用量报告并清理内存
+        let report = ctx.client.usage_report().await;
+        println!("\n{}", report);
+        ctx.client.clear_usage().await;
 
         Ok(CompilationResult {
             source_file: source_file.to_string(),
@@ -924,8 +923,10 @@ impl Pipeline {
         );
         println!("{}", "=".repeat(60));
 
-        // 输出 LLM 用量报告
-        println!("\n{}", ctx.client.usage_report());
+        // 输出 LLM 用量报告并清理内存
+        let report = ctx.client.usage_report().await;
+        println!("\n{}", report);
+        ctx.client.clear_usage().await;
 
         Ok(CompilationResult {
             source_file: source_file.to_string(),

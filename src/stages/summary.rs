@@ -1,4 +1,5 @@
 use regex::Regex;
+use std::sync::LazyLock;
 
 use crate::config::{DOC_LIMITS, doc_limits_for};
 use crate::error::Result;
@@ -97,13 +98,30 @@ pub async fn merge_summaries(
     parse_summary(&response)
 }
 
+// 预编译正则：解析摘要响应
+static TITLE_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"#\s+(.+?)\s*—\s*核心摘要").expect("硬编码正则"));
+static TITLE_FALLBACK_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"#\s+(.+)").expect("硬编码正则"));
+static OVERVIEW_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"##\s+概述\s*\n+([\s\S]+?)(?:\n##\s|$)").expect("硬编码正则")
+});
+static POINTS_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"##\s+核心要点\s*\n+([\s\S]+?)(?:\n##\s|$)").expect("硬编码正则")
+});
+static STRUCTURE_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"##\s+结构\s*\n+([\s\S]+?)(?:\n##\s|$)").expect("硬编码正则")
+});
+static POINT_ITEM_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^\s*(?:\d+\.|[\-*])\s*(.+)$").expect("硬编码正则"));
+
 /// 解析摘要响应
 fn parse_summary(response: &str) -> Result<Summary> {
-    let title_re = Regex::new(r"#\s+(.+?)\s*—\s*核心摘要").unwrap();
-    let title_fallback_re = Regex::new(r"#\s+(.+)").unwrap();
-    let overview_re = Regex::new(r"##\s+概述\s*\n+([\s\S]+?)(?:\n##\s|$)").unwrap();
-    let points_re = Regex::new(r"##\s+核心要点\s*\n+([\s\S]+?)(?:\n##\s|$)").unwrap();
-    let structure_re = Regex::new(r"##\s+结构\s*\n+([\s\S]+?)(?:\n##\s|$)").unwrap();
+    let title_re = &*TITLE_RE;
+    let title_fallback_re = &*TITLE_FALLBACK_RE;
+    let overview_re = &*OVERVIEW_RE;
+    let points_re = &*POINTS_RE;
+    let structure_re = &*STRUCTURE_RE;
 
     let title = title_re
         .captures(response)
@@ -125,12 +143,12 @@ fn parse_summary(response: &str) -> Result<Summary> {
 
     let key_points = if let Some(caps) = points_re.captures(response) {
         let points_text = caps.get(1).map(|m| m.as_str()).unwrap_or("");
-        let point_re = Regex::new(r"^\s*(?:\d+\.|[\-*])\s*(.+)$").unwrap();
+        let point_item_re = &*POINT_ITEM_RE;
         points_text
             .lines()
             .filter(|l| !l.trim().is_empty())
             .filter_map(|l| {
-                point_re
+                point_item_re
                     .captures(l)
                     .and_then(|c| c.get(1))
                     .map(|m| m.as_str().trim().to_string())

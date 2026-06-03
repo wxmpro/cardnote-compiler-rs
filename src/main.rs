@@ -266,6 +266,17 @@ async fn handle_compile(cli: Cli) -> cardnote_compiler::error::Result<()> {
         AppError::Config("请指定输入文件，或运行 cardc init / cardc doctor".to_string())
     })?;
 
+    // 路径安全验证：规范化路径（消除 .. 遍历和符号链接）
+    if file.contains('\0') || file.contains("..") {
+        return Err(AppError::FileNotFound(
+            "路径包含非法字符或路径遍历尝试".to_string(),
+        ));
+    }
+    let file = std::fs::canonicalize(&file)
+        .map_err(|e| AppError::FileNotFound(format!("路径规范化失败: {}", e)))?
+        .to_string_lossy()
+        .to_string();
+
     // ── 自动 Provider 健康检测与选择 ──
     let (api_key, provider, model) = if cli.api_key.is_none() && cli.provider.is_none() {
         println!("{} 正在检测所有 Provider 连通性...", "🔍".bright_yellow());
@@ -449,7 +460,7 @@ async fn handle_compile(cli: Cli) -> cardnote_compiler::error::Result<()> {
 
     // 自动记录编译结果到 SQLite（同步，版本自增）
     if let Ok(tracker) = cardnote_compiler::batch::CompileTracker::new() {
-        let (prompt, completion) = client_for_usage.usage_totals();
+        let (prompt, completion) = client_for_usage.usage_totals().await;
         let strategy = if document.chars().count() <= 200_000 {
             "extract_then_assign"
         } else {
