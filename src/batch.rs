@@ -29,7 +29,10 @@ fn migrate(db: &Connection, from_version: i64) -> Result<()> {
         return Ok(());
     }
 
-    eprintln!("  → 数据库 schema 升级: v{} → v{}", from_version, SCHEMA_VERSION);
+    eprintln!(
+        "  → 数据库 schema 升级: v{} → v{}",
+        from_version, SCHEMA_VERSION
+    );
 
     // v1 → v2: 完整模型重构（新增 summaries/chunks/relations/diagnostics 等表）
     if from_version < 2 {
@@ -184,9 +187,8 @@ impl CompileTracker {
         if let Some(parent) = db_path.parent() {
             std::fs::create_dir_all(parent).ok();
         }
-        let db = Connection::open(db_path).map_err(|e| {
-            AppError::TaskPanic(format!("无法打开编译记录数据库: {}", e))
-        })?;
+        let db = Connection::open(db_path)
+            .map_err(|e| AppError::TaskPanic(format!("无法打开编译记录数据库: {}", e)))?;
 
         // 强制开启外键约束（SQLite 默认关闭）
         db.execute("PRAGMA foreign_keys = ON", [])
@@ -387,6 +389,7 @@ impl CompileTracker {
     // ── Books ──
 
     /// 确保书在 books 表中存在。返回 book_id
+    #[allow(clippy::too_many_arguments)]
     pub fn ensure_book(
         &self,
         source_file: &str,
@@ -448,7 +451,9 @@ impl CompileTracker {
         result: &CompilationResult,
         cfg: &RecordConfig,
     ) -> Result<i64> {
-        let tx = self.db.unchecked_transaction()
+        let tx = self
+            .db
+            .unchecked_transaction()
             .map_err(|e| AppError::TaskPanic(format!("开启事务失败: {}", e)))?;
 
         let compilation_id = Self::insert_compilation(&tx, book_id, result, cfg)?;
@@ -464,10 +469,22 @@ impl CompileTracker {
         }
 
         // 写入卡片（事务内批量插入）
-        let accepted = result.cards.iter().filter(|c| c.status == CardStatus::Accepted && c.reject_reason.is_empty()).count();
+        let accepted = result
+            .cards
+            .iter()
+            .filter(|c| c.status == CardStatus::Accepted && c.reject_reason.is_empty())
+            .count();
         let rejected = result.cards.len() - accepted;
-        let degraded = result.cards.iter().filter(|c| c.status == CardStatus::Degraded).count();
-        let retry = result.cards.iter().filter(|c| c.status == CardStatus::NeedsRetry).count();
+        let degraded = result
+            .cards
+            .iter()
+            .filter(|c| c.status == CardStatus::Degraded)
+            .count();
+        let retry = result
+            .cards
+            .iter()
+            .filter(|c| c.status == CardStatus::NeedsRetry)
+            .count();
 
         for card in &result.cards {
             Self::insert_card(&tx, compilation_id, card)?;
@@ -507,7 +524,8 @@ impl CompileTracker {
                 result.graph.relations.len() as i64,
                 compilation_id,
             ],
-        ).map_err(|e| AppError::TaskPanic(format!("更新编译统计失败: {}", e)))?;
+        )
+        .map_err(|e| AppError::TaskPanic(format!("更新编译统计失败: {}", e)))?;
 
         tx.commit()
             .map_err(|e| AppError::TaskPanic(format!("提交编译记录事务失败: {}", e)))?;
@@ -539,7 +557,11 @@ impl CompileTracker {
               output_dir, markdown_path, duration_ms, success, error_message)
              VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18)",
             rusqlite::params![
-                book_id, version, cfg.strategy, cfg.model, cfg.provider,
+                book_id,
+                version,
+                cfg.strategy,
+                cfg.model,
+                cfg.provider,
                 cfg.doc_chars as i64,
                 cfg.total_cards as i64,
                 cfg.accepted_cards as i64,
@@ -561,8 +583,8 @@ impl CompileTracker {
     }
 
     fn insert_summary(tx: &Transaction, compilation_id: i64, summary: &Summary) -> Result<()> {
-        let key_points_json = serde_json::to_string(&summary.key_points)
-            .unwrap_or_else(|_| "[]".to_string());
+        let key_points_json =
+            serde_json::to_string(&summary.key_points).unwrap_or_else(|_| "[]".to_string());
 
         tx.execute(
             "INSERT INTO summaries (compilation_id, title, overview, structure, key_points_json)
@@ -604,26 +626,25 @@ impl CompileTracker {
     }
 
     fn insert_card(tx: &Transaction, compilation_id: i64, card: &Card) -> Result<()> {
-        let related_cards_json = serde_json::to_string(&card.related_cards)
-            .unwrap_or_else(|_| "[]".to_string());
+        let related_cards_json =
+            serde_json::to_string(&card.related_cards).unwrap_or_else(|_| "[]".to_string());
         let degraded_from = card.degraded_from.as_ref().map(|t| t.to_string());
 
         // 将 YYYYMMDDHHMMSS 格式化为 YYYY-MM-DD HH:MM:SS
-        let created_at = if card.unique_id.len() == 14
-            && card.unique_id.chars().all(|c| c.is_ascii_digit())
-        {
-            format!(
-                "{}-{}-{} {}:{}:{}",
-                &card.unique_id[0..4],
-                &card.unique_id[4..6],
-                &card.unique_id[6..8],
-                &card.unique_id[8..10],
-                &card.unique_id[10..12],
-                &card.unique_id[12..14]
-            )
-        } else {
-            String::new()
-        };
+        let created_at =
+            if card.unique_id.len() == 14 && card.unique_id.chars().all(|c| c.is_ascii_digit()) {
+                format!(
+                    "{}-{}-{} {}:{}:{}",
+                    &card.unique_id[0..4],
+                    &card.unique_id[4..6],
+                    &card.unique_id[6..8],
+                    &card.unique_id[8..10],
+                    &card.unique_id[10..12],
+                    &card.unique_id[12..14]
+                )
+            } else {
+                String::new()
+            };
 
         tx.execute(
             "INSERT INTO cards

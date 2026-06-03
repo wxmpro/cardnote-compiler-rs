@@ -704,7 +704,11 @@ fn extract_book_name(prefix: &str) -> String {
 ///
 /// 使用预编译正则定位页码标记，然后用字符串搜索检查附近内容，
 /// 避免在热路径中每次动态编译 Regex。
-fn find_keyword_page_in_source(keyword: &str, source_text: &str, scan_window: usize) -> Option<String> {
+fn find_keyword_page_in_source(
+    keyword: &str,
+    source_text: &str,
+    scan_window: usize,
+) -> Option<String> {
     if source_text.is_empty() || keyword.is_empty() {
         return None;
     }
@@ -1422,7 +1426,7 @@ mod tests {
         let issues = vec![LintIssue::EmptyTitle, LintIssue::InvalidRefFormat];
         let score = compute_card_quality_score(&card, &issues);
         assert!(
-            score >= 0.1 && score <= 0.35,
+            (0.1..=0.35).contains(&score),
             "2 Critical 应评分 0.1-0.35: {}",
             score
         );
@@ -1440,7 +1444,7 @@ mod tests {
         ];
         let score = compute_card_quality_score(&card, &issues);
         assert!(
-            score >= 0.4 && score <= 0.7,
+            (0.4..=0.7).contains(&score),
             "10 Minor 应评分 0.4-0.7: {}",
             score
         );

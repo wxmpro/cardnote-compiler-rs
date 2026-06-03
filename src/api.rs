@@ -262,11 +262,11 @@ impl LlmClient {
         }
 
         // 所有重试失败后，尝试文本降级
-        if let Some(raw) = last_raw_content {
-            if let Some(degraded) = Self::degrade_json_to_text(&raw) {
-                eprintln!("    ⚠ JSON 解析全部失败，已通过文本降级恢复");
-                return Ok(degraded);
-            }
+        if let Some(raw) = last_raw_content
+            && let Some(degraded) = Self::degrade_json_to_text(&raw)
+        {
+            eprintln!("    ⚠ JSON 解析全部失败，已通过文本降级恢复");
+            return Ok(degraded);
         }
         Err(last_error.unwrap_or_else(|| AppError::Api("JSON 请求全部重试失败".to_string())))
     }

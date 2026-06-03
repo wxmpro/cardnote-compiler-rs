@@ -22,9 +22,8 @@ static HEADING_PREFIX_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^#\s+").expect("硬编码正则应始终有效"));
 
 /// 预编译正则：匹配"第 X 页/章/节/篇"
-static PAGE_CHAPTER_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"第\s*\d+\s*[页章节篇]").expect("硬编码正则应始终有效")
-});
+static PAGE_CHAPTER_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"第\s*\d+\s*[页章节篇]").expect("硬编码正则应始终有效"));
 
 /// 预编译正则：匹配英文 Page/Chapter/Section/Part + 数字
 static ENG_MARKER_RE: LazyLock<Regex> = LazyLock::new(|| {
@@ -76,9 +75,9 @@ pub fn convert_to_markdown(file_path: &str) -> Result<String> {
     // 规范化路径：消除符号链接和相对路径，确保是绝对路径
     let canonical = std::fs::canonicalize(path)
         .map_err(|e| AppError::FileNotFound(format!("路径规范化失败: {}", e)))?;
-    let file_path = canonical.to_str().ok_or_else(|| {
-        AppError::FileNotFound("路径包含非法字符".to_string())
-    })?;
+    let file_path = canonical
+        .to_str()
+        .ok_or_else(|| AppError::FileNotFound("路径包含非法字符".to_string()))?;
 
     // OOM 防护：检查文件大小（使用规范化后的路径）
     let _file_mb = check_file_size(&canonical)?;
@@ -1075,7 +1074,6 @@ pub struct BookMetadata {
 /// 1. PDF Info 字典（Title, Author 等）—— 最准确
 /// 2. 文本正则匹配（版权页）—— fallback
 /// 3. 文件名 —— 最后手段
-/// 从 PDF 提取书籍元数据
 ///
 /// 书名提取策略（按优先级）：
 /// 1. PDF Info 字典的 Title 字段（作者/出版者显式设置的元数据，最权威）

@@ -103,15 +103,12 @@ static TITLE_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"#\s+(.+?)\s*—\s*核心摘要").expect("硬编码正则"));
 static TITLE_FALLBACK_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"#\s+(.+)").expect("硬编码正则"));
-static OVERVIEW_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"##\s+概述\s*\n+([\s\S]+?)(?:\n##\s|$)").expect("硬编码正则")
-});
-static POINTS_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"##\s+核心要点\s*\n+([\s\S]+?)(?:\n##\s|$)").expect("硬编码正则")
-});
-static STRUCTURE_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"##\s+结构\s*\n+([\s\S]+?)(?:\n##\s|$)").expect("硬编码正则")
-});
+static OVERVIEW_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"##\s+概述\s*\n+([\s\S]+?)(?:\n##\s|$)").expect("硬编码正则"));
+static POINTS_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"##\s+核心要点\s*\n+([\s\S]+?)(?:\n##\s|$)").expect("硬编码正则"));
+static STRUCTURE_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"##\s+结构\s*\n+([\s\S]+?)(?:\n##\s|$)").expect("硬编码正则"));
 static POINT_ITEM_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^\s*(?:\d+\.|[\-*])\s*(.+)$").expect("硬编码正则"));
 

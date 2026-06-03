@@ -167,7 +167,7 @@ impl CardPlanner {
             CardPlanItem::new(CardType::Term, 2 * scale, 4 * scale, true, 2),
             CardPlanItem::new(CardType::Review, scale, 2 * scale, true, 3),
             CardPlanItem::new(CardType::CounterIntuit, scale, 3 * scale, true, 4),
-            CardPlanItem::new(CardType::Action, 1 * scale, 3 * scale, false, 5),
+            CardPlanItem::new(CardType::Action, scale, 3 * scale, false, 5),
             CardPlanItem::new(CardType::Person, 0, 2 * scale, false, 6),
             CardPlanItem::new(CardType::Quote, 0, 3 * scale, false, 7),
             CardPlanItem::new(CardType::Event, 0, 2 * scale, false, 8),
@@ -186,11 +186,11 @@ impl CardPlanner {
         vec![
             CardPlanItem::new(CardType::Term, 3 * scale, 5 * scale, true, 1),
             CardPlanItem::new(CardType::Knowledge, 2 * scale, 4 * scale, true, 2),
-            CardPlanItem::new(CardType::CounterIntuit, 1 * scale, 3 * scale, true, 3),
-            CardPlanItem::new(CardType::Review, 1 * scale, 2 * scale, true, 4),
+            CardPlanItem::new(CardType::CounterIntuit, scale, 3 * scale, true, 3),
+            CardPlanItem::new(CardType::Review, scale, 2 * scale, true, 4),
             CardPlanItem::new(CardType::Quote, 0, 2 * scale, false, 5),
             CardPlanItem::new(CardType::Action, 0, 2 * scale, false, 6),
-            CardPlanItem::new(CardType::Event, 0, 1 * scale, false, 7),
+            CardPlanItem::new(CardType::Event, 0, scale, false, 7),
         ]
     }
 
@@ -204,7 +204,7 @@ impl CardPlanner {
         vec![
             CardPlanItem::new(CardType::Action, 3 * scale, 6 * scale, true, 1),
             CardPlanItem::new(CardType::Term, 2 * scale, 4 * scale, true, 2),
-            CardPlanItem::new(CardType::Index, 1 * scale, 3 * scale, true, 3),
+            CardPlanItem::new(CardType::Index, scale, 3 * scale, true, 3),
             CardPlanItem::new(CardType::Graph, 0, 2 * scale, false, 4),
             CardPlanItem::new(CardType::Knowledge, 0, 2 * scale, false, 5),
             CardPlanItem::new(CardType::Note, 0, 3 * scale, false, 6),

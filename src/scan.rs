@@ -331,6 +331,7 @@ fn scan_confidence(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn make_scan_result(
     path: &Path,
     status: PdfStatus,
