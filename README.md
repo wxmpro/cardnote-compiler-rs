@@ -238,6 +238,3 @@ output/{日期}_{书名}/
 - 检查输入质量：`cardc quality ./文件.pdf`
 - 查看诊断文件：`output/.../compile_diagnostics.md`
 
-## 发布边界
-
-以下内容不入仓库：API Key（`.env`）、用户 PDF/卡片输出、缓存（`.cardc_cache/`）、编译产物（`target/`）
