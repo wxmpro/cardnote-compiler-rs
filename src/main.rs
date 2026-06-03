@@ -411,7 +411,9 @@ async fn handle_compile(cli: Cli) -> cardnote_compiler::error::Result<()> {
     // 自动注册到 .cardnote/books.json（如果还不存在）
     cardnote_compiler::config::ensure_book_registered(&book_title);
 
+    let compile_start = std::time::Instant::now();
     let result = pipeline.run(&document, &file, &book_title).await?;
+    let compile_duration_ms = compile_start.elapsed().as_millis() as u64;
 
     // [C3] 编译结果健康检查：如果所有阶段都返回空值，提示用户可能存在失败
     if result.cards.is_empty()
@@ -458,7 +460,7 @@ async fn handle_compile(cli: Cli) -> cardnote_compiler::error::Result<()> {
     };
     println!("\n结果已保存到: {}", output_path);
 
-    // 自动记录编译结果到 SQLite（同步，版本自增）
+    // 自动记录编译结果到 SQLite（事务包裹全部子表写入）
     if let Ok(tracker) = cardnote_compiler::batch::CompileTracker::new() {
         let (prompt, completion) = client_for_usage.usage_totals().await;
         let strategy = if document.chars().count() <= 200_000 {
@@ -476,6 +478,14 @@ async fn handle_compile(cli: Cli) -> cardnote_compiler::error::Result<()> {
             }
         });
         let pdf_meta = extract_pdf_metadata(&file);
+        let file_size = std::fs::metadata(&file).map(|m| m.len()).unwrap_or(0);
+        let file_format = Path::new(&file)
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("")
+            .to_string();
+        let content_hash = cardnote_compiler::pipeline::fnv1a_hash_str(&document);
+
         let book_id = tracker
             .ensure_book(
                 &file,
@@ -483,28 +493,58 @@ async fn handle_compile(cli: Cli) -> cardnote_compiler::error::Result<()> {
                 &pdf_meta.author,
                 &pdf_meta.publisher,
                 &pdf_meta.isbn,
+                pdf_meta.page_count,
+                file_size,
+                &file_format,
+                &content_hash,
             )
             .unwrap_or(0);
-        let compilation_id = tracker
-            .record(
-                book_id,
-                strategy,
-                &client_for_usage.model,
-                document.chars().count(),
-                result.cards.len(),
-                accepted,
-                rejected,
-                result.graph.entities.len(),
-                result.graph.relations.len(),
-                prompt,
-                completion,
-                &output_path,
-            )
-            .unwrap_or(0);
-        let success = !result.cards.is_empty();
-        let _ = tracker.update_book_status(book_id, success);
-        let _ = tracker.record_cards(compilation_id, &result.cards);
-        let _ = tracker.record_entities(compilation_id, &result.graph.entities);
+
+        let markdown_path = std::path::Path::new(&output_path)
+            .join("README.md")
+            .to_string_lossy()
+            .to_string();
+        let error_message = if result.diagnostics.failures.is_empty() {
+            String::new()
+        } else {
+            result
+                .diagnostics
+                .failures
+                .iter()
+                .map(|f| format!("{}: {}", f.stage, f.error))
+                .collect::<Vec<_>>()
+                .join("; ")
+        };
+
+        let cfg = cardnote_compiler::batch::RecordConfig {
+            strategy: strategy.to_string(),
+            model: client_for_usage.model.clone(),
+            provider: provider.clone(),
+            doc_chars: document.chars().count(),
+            total_cards: result.cards.len(),
+            accepted_cards: accepted,
+            rejected_cards: rejected,
+            entity_count: result.graph.entities.len(),
+            relation_count: result.graph.relations.len(),
+            prompt_tokens: prompt,
+            completion_tokens: completion,
+            output_dir: output_path.clone(),
+            markdown_path,
+            duration_ms: compile_duration_ms,
+            success: !result.cards.is_empty(),
+            error_message,
+        };
+
+        match tracker.record_compilation(book_id, &result, &cfg) {
+            Ok(compilation_id) => {
+                let success = !result.cards.is_empty();
+                let _ = tracker.update_book_status(book_id, success);
+                eprintln!("  ✓ 编译记录已持久化 (compilation_id={})", compilation_id);
+            }
+            Err(e) => {
+                eprintln!("  ⚠ 编译记录持久化失败: {}", e);
+            }
+        }
     }
 
     let src_report = std::path::Path::new(&report_dir).join("input_quality_report.md");

@@ -26,7 +26,7 @@ use crate::stages::summary::{generate_summary, merge_summaries};
 
 /// 稳定的 FNV-1a 字符串哈希
 /// [M5] 使用稳定的 FNV-1a 哈希，避免 Rust 版本升级后 DefaultHasher 变化导致缓存全部失效
-fn fnv1a_hash_str(data: &str) -> String {
+pub fn fnv1a_hash_str(data: &str) -> String {
     let mut hash: u64 = 0xcbf29ce484222325;
     for byte in data.bytes() {
         hash ^= byte as u64;
