@@ -60,7 +60,7 @@
 
 ref：[来源。格式：来源名_p页码。直接标注当前书籍/文档中的出处]
 
-uuid：[YYYYMMDDHHMM]
+uuid：[YYYYMMDDHHMMSS]
 #图示卡
 ---
 
@@ -122,7 +122,7 @@ graph TD
 
 ref：阳志平《聪明的阅读者》P118
 
-uuid：202305060721
+uuid：20230506072100
 #图示卡
 ---
 

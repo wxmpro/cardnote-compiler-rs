@@ -71,7 +71,7 @@
 
 ref：[来源。格式：来源名_p页码。直接标注当前书籍/文档中的出处]
 
-uuid：[YYYYMMDDHHMM]
+uuid：[YYYYMMDDHHMMSS]
 #索引卡
 ---
 
@@ -139,7 +139,7 @@ uuid：[YYYYMMDDHHMM]
 
 ref：阳志平《聪明的阅读者》
 
-uuid：202305060001
+uuid：20230506000100
 #索引卡
 ---
 

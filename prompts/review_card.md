@@ -36,7 +36,7 @@
 
 ref：[来源。格式：来源名_p页码]
 
-uuid：[YYYYMMDDHHMM]
+uuid：[YYYYMMDDHHMMSS]
 #综述卡
 ---
 
@@ -70,7 +70,7 @@ uuid：[YYYYMMDDHHMM]
 
 ref：阳志平《聪明的阅读者》
 
-uuid：202305060001
+uuid：20230506000100
 #综述卡
 ---
 

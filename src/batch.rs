@@ -321,7 +321,8 @@ impl CompileTracker {
                 paraphrase TEXT NOT NULL DEFAULT '',
                 evidence TEXT NOT NULL DEFAULT '',
                 related_cards_json TEXT NOT NULL DEFAULT '[]',
-                degraded_from TEXT
+                degraded_from TEXT,
+                created_at TEXT NOT NULL DEFAULT ''
             );
             CREATE INDEX IF NOT EXISTS idx_cards_compilation ON cards(compilation_id);
             CREATE INDEX IF NOT EXISTS idx_cards_type ON cards(card_type);
@@ -607,14 +608,31 @@ impl CompileTracker {
             .unwrap_or_else(|_| "[]".to_string());
         let degraded_from = card.degraded_from.as_ref().map(|t| t.to_string());
 
+        // 将 YYYYMMDDHHMMSS 格式化为 YYYY-MM-DD HH:MM:SS
+        let created_at = if card.unique_id.len() == 14
+            && card.unique_id.chars().all(|c| c.is_ascii_digit())
+        {
+            format!(
+                "{}-{}-{} {}:{}:{}",
+                &card.unique_id[0..4],
+                &card.unique_id[4..6],
+                &card.unique_id[6..8],
+                &card.unique_id[8..10],
+                &card.unique_id[10..12],
+                &card.unique_id[12..14]
+            )
+        } else {
+            String::new()
+        };
+
         tx.execute(
             "INSERT INTO cards
              (compilation_id, chunk_id, unique_id, title, content, card_type,
               quality_score, status, reject_reason, retry_count,
               reference, source_file, location,
               original_text, source, paraphrase, evidence,
-              related_cards_json, degraded_from)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19)",
+              related_cards_json, degraded_from, created_at)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20)",
             rusqlite::params![
                 compilation_id,
                 card.chunk_id,
@@ -635,6 +653,7 @@ impl CompileTracker {
                 card.evidence,
                 related_cards_json,
                 degraded_from,
+                created_at,
             ],
         )
         .map_err(|e| AppError::TaskPanic(format!("插入卡片失败: {}", e)))?;

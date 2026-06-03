@@ -51,7 +51,7 @@
 
 ref：[来源。格式：来源名_p页码。直接标注当前书籍/文档中的出处]
 
-uuid：[YYYYMMDDHHMM]
+uuid：[YYYYMMDDHHMMSS]
 #基础卡
 ---
 
@@ -89,7 +89,7 @@ uuid：[YYYYMMDDHHMM]
 
 ref：《找工作》
 
-uuid：201501011506
+uuid：20150101150600
 #基础卡
 ---
 

@@ -47,7 +47,7 @@
 
 ref：[来源。格式：来源名_p页码]
 
-uuid：[YYYYMMDDHHMM]
+uuid：[YYYYMMDDHHMMSS]
 #任意卡
 ---
 
@@ -84,7 +84,7 @@ uuid：[YYYYMMDDHHMM]
 
 ref：阳志平《文无第一》
 
-uuid：201403042040
+uuid：20140304204000
 #任意卡
 ---
 

@@ -8,6 +8,21 @@ use crate::error::Result;
 use crate::models::{Card, CardStatus, CardType, LlmMessage};
 use crate::stages::common::ChatFn;
 
+/// 为卡片分配秒级时间戳 UUID（YYYYMMDDHHMMSS）
+/// 同一秒内生成多张卡片时，自动 +1 秒保证唯一
+fn assign_unique_ids(cards: &mut [Card]) {
+    let mut last_ts: i64 = 0;
+    for card in cards.iter_mut() {
+        let now = chrono::Local::now().timestamp();
+        let ts = std::cmp::max(now, last_ts + 1);
+        last_ts = ts;
+        let dt = chrono::DateTime::from_timestamp(ts, 0)
+            .unwrap()
+            .with_timezone(&chrono::Local);
+        card.unique_id = dt.format("%Y%m%d%H%M%S").to_string();
+    }
+}
+
 /// 卡片规划条目
 #[derive(Debug, Clone)]
 pub struct CardPlanItem {
@@ -474,9 +489,7 @@ async fn generate_cards_extract_then_assign(
     // 解析分配的卡片（从 #卡片类型 标签检测类型）
     let mut cards = parse_assigned_cards(&response)?;
 
-    for card in cards.iter_mut() {
-        card.unique_id = uuid::Uuid::now_v7().to_string();
-    }
+    assign_unique_ids(&mut cards);
 
     Ok(cards)
 }
@@ -558,9 +571,7 @@ async fn generate_cards_legacy(
         all_cards.extend(cards);
     }
 
-    for card in all_cards.iter_mut() {
-        card.unique_id = uuid::Uuid::now_v7().to_string();
-    }
+    assign_unique_ids(&mut all_cards);
 
     Ok(all_cards)
 }

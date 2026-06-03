@@ -55,7 +55,7 @@
 
 ref：[来源。格式：来源名_p页码。直接标注当前书籍/文档中的出处]
 
-uuid：[YYYYMMDDHHMM]
+uuid：[YYYYMMDDHHMMSS]
 #新词卡
 ---
 
@@ -100,7 +100,7 @@ uuid：[YYYYMMDDHHMM]
 
 ref：阳志平《浮生若梦》
 
-uuid：201712061942
+uuid：20171206194200
 #新词卡
 ---
 
