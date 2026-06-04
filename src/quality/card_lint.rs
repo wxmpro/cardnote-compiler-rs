@@ -819,22 +819,6 @@ fn check_ref_format(card: &Card, issues: &mut Vec<LintIssue>) {
             return;
         }
     }
-
-    // 如果 .cardnote/books.json 存在，来源名必须在已知书名列表中
-    let books_path = std::path::Path::new(".cardnote/books.json");
-    if books_path.exists() {
-        let known = crate::config::known_book_names();
-        if !known.is_empty() {
-            let fuzzy_match = known.iter().any(|b| {
-                source_name == b.as_str()
-                    || source_name.contains(b.as_str())
-                    || b.contains(source_name)
-            });
-            if !fuzzy_match {
-                issues.push(LintIssue::InvalidRefFormat);
-            }
-        }
-    }
 }
 
 /// 检查类型化卡片结构要求
@@ -1023,8 +1007,7 @@ mod tests {
             title: "标题A".to_string(),
             content: "内容A内容A内容A内容A内容A内容A内容A内容A内容A内容A。标题A。".to_string(),
             card_type: CardType::Knowledge,
-            // 使用 books.json 中存在的书名以通过 ref 格式校验
-            reference: "人生模式_p23".to_string(),
+            reference: "测试文档_p23".to_string(),
             unique_id: "20240101120000".to_string(),
             original_text: "".to_string(),
             source: "".to_string(),
@@ -1312,8 +1295,7 @@ mod tests {
     #[test]
     fn test_ref_format_pdf_valid() {
         let mut card = test_card();
-        // 使用 books.json 中存在的书名
-        card.reference = "人生模式_p15".to_string();
+        card.reference = "Result_20_p15".to_string();
         let config = CardLintConfig::default();
         let result = lint_card(&card, &config);
         assert!(
