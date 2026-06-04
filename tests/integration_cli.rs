@@ -56,7 +56,14 @@ fn test_cli_version() {
 
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("0.1.49"));
+    // 从 Cargo.toml 读取版本号，避免硬编码
+    let expected_version = env!("CARGO_PKG_VERSION");
+    assert!(
+        stdout.contains(expected_version),
+        "版本输出应包含 {}，实际: {}",
+        expected_version,
+        stdout
+    );
 }
 
 #[test]
