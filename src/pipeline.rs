@@ -1097,15 +1097,18 @@ async fn compile_chunk(
     let load_prompt = |name: &str| ctx_ref.load_prompt(name);
 
     // summary 和 entities 互不依赖，并行执行
-    // cards 和 graph 串行（graph 依赖 entities 结果）
-    let (summary, entities) = tokio::try_join!(
+    // 使用 join!（非 try_join!）：一个阶段失败不应取消另一个
+    // 各自的结果独立处理，失败的阶段降级为默认值
+    let (summary_result, entities_result) = tokio::join!(
         with_retry("摘要", || {
             generate_summary(&document, ctx_ref, &load_prompt)
         }),
         with_retry("实体", || {
             extract_entities(&document, ctx_ref, ctx_ref, &load_prompt)
         }),
-    )?;
+    );
+    let summary = summary_result?;
+    let entities = entities_result.unwrap_or_default();
 
     let cards = with_retry("卡片", || {
         generate_cards(&document, doc_type, &book_title, ctx_ref, &load_prompt)

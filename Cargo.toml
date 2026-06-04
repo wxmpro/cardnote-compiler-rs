@@ -64,3 +64,4 @@ toml = "0.8"
 rusqlite = { version = "0.31", features = ["bundled"] }
 
 [dev-dependencies]
+regex = "1.11"

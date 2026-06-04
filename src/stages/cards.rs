@@ -136,21 +136,9 @@ impl CardPlanner {
         )
     }
 
+    /// 委托给 CardType::as_str()，消除重复映射（DRY）
     pub fn card_type_name(card_type: &CardType) -> &'static str {
-        match card_type {
-            CardType::Knowledge => "新知卡",
-            CardType::Term => "术语卡",
-            CardType::Person => "人物卡",
-            CardType::Action => "行动卡",
-            CardType::Quote => "金句卡",
-            CardType::CounterIntuit => "反常识卡",
-            CardType::Event => "事件卡",
-            CardType::Graph => "图示卡",
-            CardType::NewWord => "新词卡",
-            CardType::Note => "基础卡",
-            CardType::Index => "索引卡",
-            CardType::Review => "综述卡",
-        }
+        card_type.as_str()
     }
 
     /// 书籍规划：多章节、综合性，优先新知卡、术语卡、综述卡、反常识卡

@@ -32,18 +32,25 @@ impl RateLimiter {
     }
 
     /// 获取一个 token，如果当前速率已达上限则等待
-    pub async fn acquire(&mut self) {
+    ///
+    /// 注意：此方法在 sleep 前释放锁，以允许其他并发请求使用限流器。
+    /// 调用方应传入 `Arc<tokio::sync::Mutex<RateLimiter>>`。
+    pub async fn acquire(limiter: &tokio::sync::Mutex<RateLimiter>) {
         loop {
-            self.refill();
-            if self.tokens >= 1.0 {
-                self.tokens -= 1.0;
-                return;
+            {
+                let mut guard = limiter.lock().await;
+                guard.refill();
+                if guard.tokens >= 1.0 {
+                    guard.tokens -= 1.0;
+                    return;
+                }
+                // 计算需要等待的时间
+                let needed = 1.0 - guard.tokens;
+                let wait_secs = needed / guard.rate;
+                drop(guard); // 释放锁后再 sleep，避免阻塞其他并发请求
+                eprintln!("    ⏳ RPM 限流，等待 {:.1}s...", wait_secs);
+                tokio::time::sleep(Duration::from_secs_f64(wait_secs)).await;
             }
-            // 等待足够的 token 补充
-            let needed = 1.0 - self.tokens;
-            let wait_secs = needed / self.rate;
-            eprintln!("    ⏳ RPM 限流，等待 {:.1}s...", wait_secs);
-            tokio::time::sleep(Duration::from_secs_f64(wait_secs)).await;
         }
     }
 

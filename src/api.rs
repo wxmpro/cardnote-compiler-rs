@@ -405,14 +405,17 @@ impl LlmClient {
 
         // 持久化到文件（追加模式，JSON Lines）
         if let Ok(json) = serde_json::to_string(&usage) {
-            let _ = std::fs::OpenOptions::new()
+            if let Err(e) = std::fs::OpenOptions::new()
                 .create(true)
                 .append(true)
                 .open(".cardnote/usage.log")
                 .and_then(|mut f| {
                     use std::io::Write;
                     writeln!(f, "{}", json)
-                });
+                })
+            {
+                eprintln!("  ⚠ LLM 用量日志写入失败: {}", e);
+            }
         }
     }
 
@@ -439,8 +442,9 @@ impl LlmClient {
     /// 发送 HTTP 请求（内部自动记录 Token 用量和延迟）
     async fn send_request(&self, request: LlmRequest) -> Result<Value> {
         // RPM 限流（如果配置了 CARDNOTE_MAX_RPM）
+        // acquire 内部在 sleep 前释放锁，允许并发请求共用限流器
         if let Some(ref limiter) = self.rate_limiter {
-            limiter.lock().await.acquire().await;
+            crate::rate_limiter::RateLimiter::acquire(limiter).await;
         }
 
         let url = format!("{}/chat/completions", self.base_url.trim_end_matches('/'));

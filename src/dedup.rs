@@ -311,6 +311,11 @@ fn compute_quality_score(card: &Card) -> f64 {
 }
 
 /// 计算信息密度：每100字中的术语/概念数量
+///
+/// 这是去重专用的轻量级启发式（硬编码关键词，0-1 归一化），
+/// 与 `quality::card_lint::compute_info_density` 不同：
+/// 后者使用可配置的加权 markers，返回无界分数用于质量评分。
+/// 两者有意分离 —— 去重不依赖质量模块的配置系统。
 fn compute_info_density(content: &str) -> f64 {
     if content.is_empty() {
         return 0.0;

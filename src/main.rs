@@ -32,7 +32,9 @@ fn cleanup_stale_temp_dirs() {
                 && let Ok(modified) = metadata.modified()
                 && modified < one_day_ago
             {
-                let _ = std::fs::remove_dir_all(&path);
+                if let Err(e) = std::fs::remove_dir_all(&path) {
+                    eprintln!("  ⚠ 清理残留临时目录失败 {}: {}", path.display(), e);
+                }
             }
         }
     }
@@ -437,12 +439,16 @@ async fn handle_compile(cli: Cli) -> cardnote_compiler::error::Result<()> {
     cardnote_compiler::config::ensure_book_registered(&book_title);
 
     let doc_dir = Path::new("./documents");
-    tokio::fs::create_dir_all(&doc_dir).await.ok();
+    if let Err(e) = tokio::fs::create_dir_all(&doc_dir).await {
+        eprintln!("  ⚠ 文档备份目录创建失败: {}", e);
+    }
     if let Some(file_name) = Path::new(&file).file_name() {
         let timestamp = Local::now().format("%Y%m%d%H%M%S").to_string();
         let doc_name = format!("{}_{}", timestamp, file_name.to_string_lossy());
         let dest = doc_dir.join(&doc_name);
-        tokio::fs::copy(&file, &dest).await.ok();
+        if let Err(e) = tokio::fs::copy(&file, &dest).await {
+            eprintln!("  ⚠ 文档备份复制失败 ({} -> {}): {}", file, dest.display(), e);
+        }
     }
 
     let output_path = if !result.chunks.is_empty() && result.chunks.len() > 1 {
@@ -498,7 +504,10 @@ async fn handle_compile(cli: Cli) -> cardnote_compiler::error::Result<()> {
                 &file_format,
                 &content_hash,
             )
-            .unwrap_or(0);
+            .unwrap_or_else(|e| {
+                eprintln!("  ⚠ 书籍注册失败 ({}): {} — book_id 置为 0", book_title, e);
+                0
+            });
 
         let markdown_path = std::path::Path::new(&output_path)
             .join("README.md")
