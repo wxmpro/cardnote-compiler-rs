@@ -301,8 +301,9 @@ pub async fn generate_cards(
 ) -> Result<Vec<Card>> {
     let chars = document.chars().count();
 
-    // 文档 ≤ 200K 字符时尝试新策略
-    if chars <= 200_000 {
+    // 文档 ≤ 200K 字符时尝试新策略（除非通过环境变量禁用）
+    let disable_extract = crate::config::disable_extract_assign();
+    if chars <= 200_000 && !disable_extract {
         match generate_cards_extract_then_assign(
             document,
             doc_type,

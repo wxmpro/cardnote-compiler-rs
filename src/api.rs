@@ -65,6 +65,11 @@ impl LlmClient {
         })
     }
 
+    /// 获取 provider ID（用于缓存 key 等需要区分 provider 的场景）
+    pub fn provider_id(&self) -> &str {
+        &self.provider_id
+    }
+
     /// 获取当前实际使用的模型 ID
     fn current_model(&self) -> String {
         let idx = self.current_model_idx.load(Ordering::Relaxed);
@@ -461,12 +466,30 @@ impl LlmClient {
             .map_err(|e| AppError::Api(format!("请求发送失败: {}", e)))?;
 
         let status = response.status();
+
+        // 429 Too Many Requests: 解析 Retry-After header
+        if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
+            let retry_after = response
+                .headers()
+                .get("retry-after")
+                .and_then(|v| v.to_str().ok())
+                .and_then(|v| v.parse::<u64>().ok())
+                .unwrap_or(5);
+            eprintln!(
+                "    ⚠ API 速率限制 (429)，等待 {}s 后重试...",
+                retry_after
+            );
+            return Err(AppError::RateLimited(retry_after));
+        }
+
+        let latency_ms = start.elapsed().as_millis() as u64;
+
+        // 尝试解析 JSON body（即使非 2xx 也可能有 JSON error body）
         let body = response
             .json::<Value>()
             .await
-            .map_err(|e| AppError::Api(format!("响应解析失败: {}", e)))?;
+            .unwrap_or_else(|_| serde_json::json!({}));
 
-        let latency_ms = start.elapsed().as_millis() as u64;
         let usage = self.extract_usage(&body, latency_ms);
         self.record_usage(usage).await;
 

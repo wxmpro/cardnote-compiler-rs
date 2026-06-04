@@ -15,6 +15,9 @@ pub enum AppError {
     #[error("LLM API 错误: {0}")]
     Api(String),
 
+    #[error("速率限制: 需等待 {0} 秒后重试")]
+    RateLimited(u64),
+
     #[error("Prompt 模板加载失败: {0}")]
     PromptLoad(String),
 

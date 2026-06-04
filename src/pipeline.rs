@@ -58,25 +58,40 @@ struct CompileCache {
 }
 
 impl CompileCache {
-    const CURRENT_VERSION: u32 = 1;
+    const CURRENT_VERSION: u32 = 2; // v2: key 包含 provider+model
     const CACHE_DIR: &'static str = ".cardc_cache";
 
-    /// 计算文档哈希
-    fn hash_document(document: &str) -> String {
-        fnv1a_hash_str(document)
+    /// 计算缓存 key（包含 provider + model，避免跨 provider 脏缓存）
+    fn cache_key(provider: &str, model: &str, document: &str) -> String {
+        let combined = format!(
+            "v{}|{}|{}|{}",
+            Self::CURRENT_VERSION,
+            provider,
+            model,
+            fnv1a_hash_str(document)
+        );
+        fnv1a_hash_str(&combined)
     }
 
-    /// 获取缓存文件路径
-    fn cache_path(source_file: &str) -> PathBuf {
+    /// 获取缓存文件路径（基于 source_file + provider + model + doc_hash）
+    fn cache_path(source_file: &str, provider: &str, model: &str, document: &str) -> PathBuf {
         let cache_dir = Path::new(Self::CACHE_DIR);
         std::fs::create_dir_all(cache_dir).ok();
-        let filename = format!("{}.cache.json", source_file.replace(['/', '\\', ':'], "_"));
+        let safe_source = source_file.replace(['/', '\\', ':'], "_");
+        let provider_model_hash = fnv1a_hash_str(&format!("{}:{}", provider, model));
+        let doc_hash = fnv1a_hash_str(document);
+        let filename = format!(
+            "{}_{}_{}.cache.json",
+            safe_source,
+            &provider_model_hash[..8],
+            &doc_hash[..8]
+        );
         cache_dir.join(filename)
     }
 
     /// 加载缓存
-    fn load(source_file: &str, document: &str) -> Option<Self> {
-        let path = Self::cache_path(source_file);
+    fn load(source_file: &str, provider: &str, model: &str, document: &str) -> Option<Self> {
+        let path = Self::cache_path(source_file, provider, model, document);
         if !path.exists() {
             return None;
         }
@@ -84,9 +99,9 @@ impl CompileCache {
         let content = std::fs::read_to_string(&path).ok()?;
         let cache: CompileCache = serde_json::from_str(&content).ok()?;
 
-        // 验证版本和文档哈希
-        let expected_hash = Self::hash_document(document);
-        if cache.version != Self::CURRENT_VERSION || cache.document_hash != expected_hash {
+        // 验证版本和缓存 key（包含 provider+model）
+        let expected_key = Self::cache_key(provider, model, document);
+        if cache.version != Self::CURRENT_VERSION || cache.document_hash != expected_key {
             return None;
         }
 
@@ -94,8 +109,8 @@ impl CompileCache {
     }
 
     /// 保存缓存
-    fn save(&self, source_file: &str) -> Result<()> {
-        let path = Self::cache_path(source_file);
+    fn save(&self, source_file: &str, provider: &str, model: &str, document: &str) -> Result<()> {
+        let path = Self::cache_path(source_file, provider, model, document);
         let content = serde_json::to_string_pretty(self)
             .map_err(|e| AppError::TaskPanic(format!("缓存序列化失败: {}", e)))?;
         std::fs::write(&path, content)
@@ -104,9 +119,9 @@ impl CompileCache {
     }
 
     /// 创建新缓存
-    fn new(document: &str, chunk_count: usize) -> Self {
+    fn new(provider: &str, model: &str, document: &str, chunk_count: usize) -> Self {
         Self {
-            document_hash: Self::hash_document(document),
+            document_hash: Self::cache_key(provider, model, document),
             chunk_results: vec![None; chunk_count],
             version: Self::CURRENT_VERSION,
         }
@@ -142,13 +157,13 @@ impl CompileCache {
 
 /// Stage 缓存：按阶段（summary/entities/cards/graph）缓存编译结果
 ///
-/// 缓存 key = SHA256(stage_name + "|" + document_hash + "|" + prompt_hash + "|" + model_name)
-/// 失效条件：文档内容改变 / prompt 模板改变 / 模型改变
+/// 缓存 key = FNV-1a(version|provider|stage|doc_hash|prompt_hash|model)
+/// 失效条件：provider/model 改变 / 文档内容改变 / prompt 模板改变
 struct StageCache;
 
 impl StageCache {
     const CACHE_DIR: &'static str = ".cardc_cache/stages";
-    const VERSION: &'static str = "v1";
+    const VERSION: &'static str = "v2"; // v2: key 包含 provider
 
     /// FNV-1a 哈希
     fn fnv1a_hash(data: &str) -> String {
@@ -165,14 +180,16 @@ impl StageCache {
     /// 用预计算的文档哈希加载缓存（避免重复哈希文档）
     fn load_with_hash<T: serde::de::DeserializeOwned>(
         stage: &str,
+        provider: &str,
         doc_hash: &str,
         prompt: &str,
         model: &str,
     ) -> Option<T> {
         let prompt_hash = Self::fnv1a_hash(prompt);
         let combined = format!(
-            "{}|{}|{}|{}|{}",
+            "{}|{}|{}|{}|{}|{}",
             Self::VERSION,
+            provider,
             stage,
             doc_hash,
             prompt_hash,
@@ -187,9 +204,10 @@ impl StageCache {
         serde_json::from_str(&content).ok()
     }
 
-    /// 用预计算的文档哈希保存缓存
+    /// 用预计算的文档哈希保存缓存（仅保存非空结果，避免缓存失败）
     fn save_with_hash<T: serde::Serialize>(
         stage: &str,
+        provider: &str,
         doc_hash: &str,
         prompt: &str,
         model: &str,
@@ -197,8 +215,9 @@ impl StageCache {
     ) {
         let prompt_hash = Self::fnv1a_hash(prompt);
         let combined = format!(
-            "{}|{}|{}|{}|{}",
+            "{}|{}|{}|{}|{}|{}",
             Self::VERSION,
+            provider,
             stage,
             doc_hash,
             prompt_hash,
@@ -324,10 +343,11 @@ impl CompileContext {
         let doc_hash = self.get_doc_hash(document).to_string();
         let prompt = self.prompts.get(prompt_name).cloned().unwrap_or_default();
         let model = self.client.model.clone();
-        StageCache::load_with_hash(stage, &doc_hash, &prompt, &model)
+        let provider = self.client.provider_id().to_string();
+        StageCache::load_with_hash(stage, &provider, &doc_hash, &prompt, &model)
     }
 
-    /// 保存阶段缓存（使用缓存的文档哈希）
+    /// 保存阶段缓存（使用缓存的文档哈希，仅保存非空成功结果）
     fn save_stage<T: serde::Serialize>(
         &self,
         stage: &str,
@@ -341,7 +361,8 @@ impl CompileContext {
         let doc_hash = self.get_doc_hash(document).to_string();
         let prompt = self.prompts.get(prompt_name).cloned().unwrap_or_default();
         let model = self.client.model.clone();
-        StageCache::save_with_hash(stage, &doc_hash, &prompt, &model, value);
+        let provider = self.client.provider_id().to_string();
+        StageCache::save_with_hash(stage, &provider, &doc_hash, &prompt, &model, value);
     }
 }
 
@@ -534,7 +555,10 @@ impl Pipeline {
                 match with_retry("摘要", || generate_summary(document, ctx, &load_prompt)).await {
                     Ok(s) => {
                         println!("  ✓ 摘要完成");
-                        ctx.save_stage("summary", document, "summary", &s);
+                        // 仅缓存非空结果（避免空结果污染缓存）
+                        if !s.title.is_empty() || !s.key_points.is_empty() {
+                            ctx.save_stage("summary", document, "summary", &s);
+                        }
                         s
                     }
                     Err(e) => {
@@ -565,7 +589,9 @@ impl Pipeline {
             {
                 Ok(e) => {
                     println!("  ✓ 标注完成 — 识别 {} 个实体", e.len());
-                    ctx.save_stage("entities", document, "entity_extraction", &e);
+                    if !e.is_empty() {
+                        ctx.save_stage("entities", document, "entity_extraction", &e);
+                    }
                     e
                 }
                 Err(e) => {
@@ -619,7 +645,9 @@ impl Pipeline {
             {
                 Ok(g) => {
                     println!("  ✓ 图谱完成 — {} 条关系", g.relations.len());
-                    ctx.save_stage("graph", document, "relation_graph", &g);
+                    if !g.relations.is_empty() {
+                        ctx.save_stage("graph", document, "relation_graph", &g);
+                    }
                     g
                 }
                 Err(e) => {
@@ -698,9 +726,12 @@ impl Pipeline {
         let mut chunk_results: Vec<ChunkResult> = vec![ChunkResult::default(); chunks_len];
         let mut failed_chunks: Vec<(usize, String)> = Vec::new();
 
-        // 2a. 检查编译缓存（断点续编译）
-        let mut cache = CompileCache::load(source_file, document)
-            .unwrap_or_else(|| CompileCache::new(document, chunks_len));
+        let provider = self.ctx.client.provider_id().to_string();
+        let model = self.ctx.client.model.clone();
+
+        // 2a. 检查编译缓存（断点续编译，key 含 provider+model）
+        let mut cache = CompileCache::load(source_file, &provider, &model, document)
+            .unwrap_or_else(|| CompileCache::new(&provider, &model, document, chunks_len));
         let completed = cache.completed_indices();
         if !completed.is_empty() {
             println!("  💾 发现编译缓存，已完成的块: {:?}", completed);
@@ -715,12 +746,8 @@ impl Pipeline {
             println!("  🔄 继续编译未完成的块: {:?}", pending);
         }
 
-        // 2b. 编译未完成的块（并发数可通过环境变量配置，默认 2）
-        let max_workers: usize = std::env::var("CARDNOTE_MAX_WORKERS")
-            .ok()
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(2);
-        let semaphore = Arc::new(Semaphore::new(max_workers));
+        // 2b. 编译未完成的块（串行：一次一个请求，避免 API 429）
+        let semaphore = Arc::new(Semaphore::new(1));
         let mut handles = Vec::new();
         for idx in &pending {
             let idx = *idx; // copy to avoid borrow issue
@@ -754,7 +781,7 @@ impl Pipeline {
                     );
                     chunk_results[idx] = result.clone();
                     cache.set_chunk_result(idx, result);
-                    cache.save(source_file).ok();
+                    cache.save(source_file, &provider, &model, document).ok();
                 }
                 Err(e) => {
                     let err_msg = format!("块 {} 编译失败: {}", idx + 1, e);
@@ -1065,9 +1092,21 @@ where
 {
     let max_retries = 3;
     let mut last_err = None;
-    for attempt in 1..=max_retries {
+    let mut attempt = 0;
+    while attempt < max_retries {
+        attempt += 1;
         match f().await {
             Ok(result) => return Ok(result),
+            Err(crate::error::AppError::RateLimited(seconds)) => {
+                // 429: 使用 API 指定的等待时间，不计入重试次数
+                eprintln!(
+                    "    ⏳ {} 触发速率限制 (429)，等待 {}s...",
+                    name, seconds
+                );
+                tokio::time::sleep(std::time::Duration::from_secs(seconds)).await;
+                attempt = 0; // 重置计数，429 不算失败
+                continue;
+            }
             Err(e) => {
                 let msg = format!("{}: {}", name, e);
                 eprintln!(
@@ -1096,32 +1135,49 @@ async fn compile_chunk(
     let ctx_ref = &ctx;
     let load_prompt = |name: &str| ctx_ref.load_prompt(name);
 
-    // summary 和 entities 互不依赖，并行执行
-    // 使用 join!（非 try_join!）：一个阶段失败不应取消另一个
-    // 各自的结果独立处理，失败的阶段降级为默认值
-    let (summary_result, entities_result) = tokio::join!(
-        with_retry("摘要", || {
-            generate_summary(&document, ctx_ref, &load_prompt)
-        }),
-        with_retry("实体", || {
-            extract_entities(&document, ctx_ref, ctx_ref, &load_prompt)
-        }),
-    );
-    // summary 失败 = 致命（无可恢复的默认值），传播错误触发上层重试
-    let summary = summary_result?;
-    // entities 失败 → 降级为空列表（graph 阶段可基于空 entities 构建）
-    let entities = entities_result.unwrap_or_default();
+    // 全部串行：一次一个 LLM 请求，避免并发 429
+    // 每个 stage 独立缓存，断点续编译时命中缓存可跳过 LLM 调用
 
+    // 阶段 1: Summary（含缓存）
+    let summary = if let Some(cached) = ctx_ref.try_load_stage::<Summary>("summary", &document, "summary") {
+        cached
+    } else {
+        let s = with_retry("摘要", || generate_summary(&document, ctx_ref, &load_prompt)).await?;
+        if !s.title.is_empty() || !s.key_points.is_empty() {
+            ctx_ref.save_stage("summary", &document, "summary", &s);
+        }
+        s
+    };
+
+    // 阶段 2: Entities（含缓存，串行在 summary 之后）
+    let entities = if let Some(cached) = ctx_ref.try_load_stage::<Vec<Entity>>("entities", &document, "entity_extraction") {
+        cached
+    } else {
+        let e = with_retry("实体", || extract_entities(&document, ctx_ref, ctx_ref, &load_prompt))
+            .await
+            .unwrap_or_default();
+        if !e.is_empty() {
+            ctx_ref.save_stage("entities", &document, "entity_extraction", &e);
+        }
+        e
+    };
+
+    // 阶段 3: Cards
     let cards = with_retry("卡片", || {
         generate_cards(&document, doc_type, &book_title, ctx_ref, &load_prompt)
     })
     .await?;
 
-    // graph 依赖 entities 结果，顺序执行
-    let graph = with_retry("图谱", || {
-        build_graph(&document, &entities, ctx_ref, ctx_ref, &load_prompt)
-    })
-    .await?;
+    // 阶段 4: Graph（含缓存，依赖 entities 结果）
+    let graph = if let Some(cached) = ctx_ref.try_load_stage::<KnowledgeGraph>("graph", &document, "relation_graph") {
+        cached
+    } else {
+        let g = with_retry("图谱", || build_graph(&document, &entities, ctx_ref, ctx_ref, &load_prompt)).await?;
+        if !g.relations.is_empty() {
+            ctx_ref.save_stage("graph", &document, "relation_graph", &g);
+        }
+        g
+    };
 
     Ok(ChunkResult {
         document: document.clone(),

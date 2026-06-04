@@ -997,9 +997,19 @@ pub fn ensure_book_registered(book_name: &str) {
     }
 }
 
-/// 读取 RPM 限流配置（未设置时返回 None，不限流）
+/// 读取 RPM 限流配置（默认 30 RPM，可通过环境变量覆盖）
 pub fn max_rpm() -> Option<u32> {
     std::env::var("CARDNOTE_MAX_RPM")
         .ok()
         .and_then(|s| s.parse().ok())
+        .or(Some(30)) // 默认 30 RPM，避免 429
+}
+
+/// 是否禁用 extract-then-assign 策略（某些模型不兼容）
+/// 设置 CARDC_DISABLE_EXTRACT_ASSIGN=1 跳过必然失败的 extract+assign 两步，
+/// 直接走 legacy 分类型生成，节省 2 次 LLM 调用/chunk。
+pub fn disable_extract_assign() -> bool {
+    std::env::var("CARDC_DISABLE_EXTRACT_ASSIGN")
+        .map(|v| v == "1" || v == "true")
+        .unwrap_or(false)
 }

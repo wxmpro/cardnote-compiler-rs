@@ -1023,7 +1023,8 @@ mod tests {
             title: "标题A".to_string(),
             content: "内容A内容A内容A内容A内容A内容A内容A内容A内容A内容A。标题A。".to_string(),
             card_type: CardType::Knowledge,
-            reference: "测试文档_p23".to_string(),
+            // 使用 books.json 中存在的书名以通过 ref 格式校验
+            reference: "人生模式_p23".to_string(),
             unique_id: "20240101120000".to_string(),
             original_text: "".to_string(),
             source: "".to_string(),
@@ -1311,7 +1312,8 @@ mod tests {
     #[test]
     fn test_ref_format_pdf_valid() {
         let mut card = test_card();
-        card.reference = "Result_20_p15".to_string();
+        // 使用 books.json 中存在的书名
+        card.reference = "人生模式_p15".to_string();
         let config = CardLintConfig::default();
         let result = lint_card(&card, &config);
         assert!(
