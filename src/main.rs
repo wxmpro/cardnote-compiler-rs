@@ -310,16 +310,11 @@ async fn handle_compile(cli: Cli) -> cardnote_compiler::error::Result<()> {
     let client = create_client(&provider, &api_key, model, cli.base_url)?;
 
     let provider_label = get_provider_label(&provider);
-    let file_display = if file.chars().count() < 60 {
+    let count = file.chars().count();
+    let file_display = if count < 60 {
         file.clone()
     } else {
-        file.chars()
-            .rev()
-            .take(57)
-            .collect::<Vec<_>>()
-            .into_iter()
-            .rev()
-            .collect()
+        file.chars().skip(count - 57).collect()
     };
     println!("  {} 文件: {}", "✦".cyan(), file_display);
     println!(

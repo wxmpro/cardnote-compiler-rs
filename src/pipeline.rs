@@ -1107,7 +1107,9 @@ async fn compile_chunk(
             extract_entities(&document, ctx_ref, ctx_ref, &load_prompt)
         }),
     );
+    // summary 失败 = 致命（无可恢复的默认值），传播错误触发上层重试
     let summary = summary_result?;
+    // entities 失败 → 降级为空列表（graph 阶段可基于空 entities 构建）
     let entities = entities_result.unwrap_or_default();
 
     let cards = with_retry("卡片", || {
@@ -1133,7 +1135,9 @@ async fn compile_chunk(
 
 // ── 辅助函数 ──
 
-fn heading_regex() -> &'static Regex {
+/// 共享的标题正则（h1-h3），用于语义分块和结构检测
+/// 同时被 converter.rs 和 quality 模块引用，避免重复编译
+pub(crate) fn heading_regex() -> &'static Regex {
     // [M3] 统一使用 LazyLock（Rust 1.80+ 标准库），与代码库其他位置保持一致
     static RE: LazyLock<Regex> =
         LazyLock::new(|| Regex::new(r"^(#{1,3})\s+(.+)$").expect("硬编码正则应始终有效"));

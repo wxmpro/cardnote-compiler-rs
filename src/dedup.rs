@@ -1,6 +1,6 @@
 use std::collections::HashSet;
 
-use crate::models::Card;
+use crate::models::{Card, CardType};
 
 /// 去重配置
 #[derive(Debug, Clone)]
@@ -290,7 +290,7 @@ fn compute_quality_score(card: &Card) -> f64 {
     score += structure_score * 0.25;
 
     // 维度4：引用完整性（金句卡有原文/出处/仿写加分）
-    let quote_bonus = if card.card_type.to_string() == "金句卡" {
+    let quote_bonus = if card.card_type == CardType::Quote {
         let mut bonus = 0.0;
         if !card.original_text.is_empty() {
             bonus += 0.5;

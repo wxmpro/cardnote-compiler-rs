@@ -14,22 +14,23 @@ use crate::models::{
 use crate::quality::QualityReport;
 use crate::scan::ScanResult;
 
+/// 检查 42md CLI 工具是否可用
+async fn is_42md_available() -> bool {
+    matches!(
+        Command::new("42md")
+            .arg("--version")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .await,
+        Ok(status) if status.success()
+    )
+}
+
 /// 可选：使用 42md 的 lint 工具优化排版
 async fn apply_42md_lint(md_path: &Path) -> Result<()> {
-    // 检查 42md 是否可用
-    let check = Command::new("42md")
-        .arg("--version")
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .await;
-
-    let is_available = match check {
-        Ok(status) => status.success(),
-        Err(_) => false,
-    };
-    if !is_available {
-        return Ok(()); // 42md 未安装，静默跳过
+    if !is_42md_available().await {
+        return Ok(());
     }
 
     let output = Command::new("42md")
@@ -49,18 +50,7 @@ async fn apply_42md_lint(md_path: &Path) -> Result<()> {
 /// 可选：使用 42md 将 Markdown 转为 PDF
 #[allow(dead_code)]
 async fn apply_42md_md2pdf(md_path: &Path) -> Result<()> {
-    let check = Command::new("42md")
-        .arg("--version")
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .await;
-
-    let is_available = match check {
-        Ok(status) => status.success(),
-        Err(_) => false,
-    };
-    if !is_available {
+    if !is_42md_available().await {
         return Ok(());
     }
 

@@ -5,9 +5,7 @@ use std::sync::LazyLock;
 
 use regex::Regex;
 
-/// 预编译正则：检测 Markdown 标题结构
-static HEADING_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"^#{1,3}\s+").expect("硬编码正则应始终有效"));
+// 标题检测正则已提升为共享：crate::pipeline::heading_regex()
 
 /// 预编译正则：匹配一级标题
 static H1_RE: LazyLock<Regex> =
@@ -273,7 +271,7 @@ fn read_pdf_single(file_path: &str, is_scanned: bool) -> Result<String> {
     {
         let cleaned = crate::quality::clean_text(&text);
         // 检查是否保留了标题结构，没有则回退到 PyMuPDF（带 TOC 注入）
-        let has_structure = HEADING_RE.is_match(&cleaned);
+        let has_structure = crate::pipeline::heading_regex().is_match(&cleaned);
         if has_structure {
             return Ok(cleaned);
         }
