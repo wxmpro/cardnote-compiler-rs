@@ -8,7 +8,6 @@ use colored::Colorize;
 use reqwest::Client;
 use serde_json::Value;
 
-use crate::config::get_provider_config;
 use crate::error::{AppError, Result};
 use crate::models::{LlmMessage, LlmRequest, LlmUsage, ResponseFormat};
 use crate::providers::ProviderRegistry;
@@ -128,6 +127,15 @@ impl LlmClient {
         }
     }
 
+    /// 获取 thinking 配置（Deepseek V4 关闭思考模式以节省 token）
+    fn thinking_config(&self) -> Option<serde_json::Value> {
+        if self.provider_id == "deepseek" {
+            Some(serde_json::json!({"type": "disabled"}))
+        } else {
+            None
+        }
+    }
+
     /// 发送聊天请求，返回原始响应 JSON
     pub async fn chat(&self, messages: Vec<LlmMessage>, max_tokens: Option<u32>) -> Result<Value> {
         let request = LlmRequest {
@@ -135,6 +143,7 @@ impl LlmClient {
             messages,
             max_tokens,
             response_format: None,
+            thinking: self.thinking_config(),
         };
 
         self.send_request(request).await
@@ -206,6 +215,7 @@ impl LlmClient {
         // Anthropic / Gemini / Cohere：仅依赖 system prompt 要求 JSON，不使用 response_format
         let use_json_object =
             !matches!(self.provider_id.as_str(), "anthropic" | "google" | "cohere");
+
         let request = LlmRequest {
             model: model.to_string(),
             messages: modified_messages,
@@ -215,6 +225,7 @@ impl LlmClient {
             } else {
                 None
             },
+            thinking: self.thinking_config(),
         };
 
         // 重试逻辑：最多 3 次，指数退避
@@ -337,15 +348,27 @@ impl LlmClient {
 
     /// 从响应中提取内容文本
     pub fn extract_content(&self, response: &Value) -> Result<String> {
-        // OpenAI 格式: choices[0].message.content
-        if let Some(content) = response
+        let message = response
             .get("choices")
             .and_then(|c| c.get(0))
-            .and_then(|c| c.get("message"))
+            .and_then(|c| c.get("message"));
+
+        // OpenAI 格式: choices[0].message.content
+        if let Some(content) = message
             .and_then(|m| m.get("content"))
             .and_then(|c| c.as_str())
+            .filter(|c| !c.is_empty())
         {
             return Ok(content.to_string());
+        }
+
+        // Deepseek V4 Pro 思考模式: choices[0].message.reasoning_content
+        if let Some(reasoning) = message
+            .and_then(|m| m.get("reasoning_content"))
+            .and_then(|c| c.as_str())
+            .filter(|c| !c.is_empty())
+        {
+            return Ok(reasoning.to_string());
         }
 
         // 某些 API 可能直接返回 content
@@ -516,14 +539,33 @@ pub fn create_client(
     model: Option<String>,
     base_url: Option<String>,
 ) -> Result<LlmClient> {
+    // 所有配置强制从扫描结果读取，禁止硬编码 fallback
+    let creds = crate::providers::scan_credentials();
+    let cred = creds.get(provider).ok_or_else(|| {
+        AppError::Config(format!(
+            "Provider '{}' 未配置。请先运行 cardc init 或配置 .cardnote/providers.json",
+            provider
+        ))
+    })?;
+
     let effective_model = model
         .clone()
-        .or_else(|| get_provider_config(provider).map(|c| c.default_model.to_string()))
-        .unwrap_or_else(|| "unknown".to_string());
+        .or_else(|| cred.default_model.clone())
+        .ok_or_else(|| {
+            AppError::Config(format!(
+                "Provider '{}' 未配置模型。请在配置文件中添加 'model' 字段",
+                provider
+            ))
+        })?;
 
     let effective_base_url = base_url
-        .or_else(|| get_provider_config(provider).map(|c| c.base_url.to_string()))
-        .unwrap_or_else(|| "https://api.deepseek.com/v1".to_string());
+        .or_else(|| cred.base_url.clone())
+        .ok_or_else(|| {
+            AppError::Config(format!(
+                "Provider '{}' 未配置 base_url。请在配置文件中添加 'base_url' 字段",
+                provider
+            ))
+        })?;
 
     // [C5] 验证 base_url 格式，防止请求到恶意服务器
     if let Err(e) = reqwest::Url::parse(&effective_base_url) {

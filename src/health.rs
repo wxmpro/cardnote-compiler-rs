@@ -33,13 +33,25 @@ async fn check_provider(cred: &ProviderCredential) -> Vec<ProviderHealth> {
         .map(|p| p.name.clone())
         .unwrap_or_else(|| cred.provider_id.clone());
 
-    // 确定要测试的模型：优先用户指定的，否则用 provider 默认模型
-    let models_to_test: Vec<String> = if let Some(ref user_model) = cred.default_model {
-        vec![user_model.clone()]
-    } else {
-        provider
-            .map(|p| p.models.iter().map(|m| m.id.clone()).collect())
-            .unwrap_or_default()
+    // 确定要测试的模型：强制从配置读取，禁止 fallback 到硬编码
+    let models_to_test: Vec<String> = match cred.default_model {
+        Some(ref model) => vec![model.clone()],
+        None => {
+            eprintln!(
+                "  ⚠ Provider '{}' 未配置 model，跳过健康检测",
+                cred.provider_id
+            );
+            return vec![ProviderHealth {
+                provider_id: cred.provider_id.clone(),
+                provider_name: cred.provider_id.clone(),
+                model: "未配置".to_string(),
+                latency_ms: 0,
+                available: false,
+                prompt_tokens: 0,
+                completion_tokens: 0,
+                error: Some("未在 .cardnote/providers.json 中配置 model 字段".to_string()),
+            }];
+        }
     };
 
     let mut results = Vec::new();
@@ -47,13 +59,30 @@ async fn check_provider(cred: &ProviderCredential) -> Vec<ProviderHealth> {
     for model in models_to_test {
         let start = Instant::now();
 
+        // 强制从配置读取 base_url，禁止 fallback 到硬编码
+        let base_url = match cred.base_url.clone() {
+            Some(url) => url,
+            None => {
+                results.push(ProviderHealth {
+                    provider_id: cred.provider_id.clone(),
+                    provider_name: provider_name.clone(),
+                    model: model.clone(),
+                    latency_ms: 0,
+                    available: false,
+                    prompt_tokens: 0,
+                    completion_tokens: 0,
+                    error: Some(format!(
+                        "Provider '{}' 未配置 base_url，请在 .cardnote/providers.json 中添加",
+                        cred.provider_id
+                    )),
+                });
+                continue;
+            }
+        };
+
         let client = match LlmClient::new(
             cred.api_key.clone(),
-            cred.base_url.clone().unwrap_or_else(|| {
-                provider
-                    .map(|p| p.default_base_url.clone())
-                    .unwrap_or_default()
-            }),
+            base_url,
             model.clone(),
             cred.provider_id.clone(),
             Vec::new(), // fallback_models，健康检测不需要

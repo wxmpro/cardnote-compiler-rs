@@ -491,6 +491,9 @@ pub struct LlmRequest {
     pub max_tokens: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub response_format: Option<ResponseFormat>,
+    /// Deepseek V4 思考模式控制（可选）
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub thinking: Option<serde_json::Value>,
 }
 
 /// LLM 调用用量统计
@@ -745,5 +748,67 @@ mod tests {
         };
         let mermaid = graph.to_mermaid();
         assert_eq!(mermaid, "graph TD");
+    }
+}
+
+// ═══════════════════════════════════════════════════════
+//  Unified 编译模式：一次请求返回 summary + entities + cards + relations
+// ═══════════════════════════════════════════════════════
+
+/// Unified 模式单块响应（用于 JSON 反序列化）
+#[derive(Debug, Clone, Deserialize)]
+pub struct UnifiedChunkResponse {
+    pub summary: Summary,
+    pub entities: Vec<Entity>,
+    pub cards: Vec<UnifiedCard>,
+    pub relations: Vec<Relation>,
+}
+
+/// Unified 模式卡片（字段更宽松，适配 LLM 输出）
+#[derive(Debug, Clone, Deserialize)]
+pub struct UnifiedCard {
+    pub card_type: String,
+    pub title: String,
+    pub content: String,
+    #[serde(default)]
+    pub reference: String,
+    #[serde(default)]
+    pub original_text: String,
+    #[serde(default)]
+    pub evidence: String,
+}
+
+impl UnifiedChunkResponse {
+    /// 将 Unified 响应转换为标准 ChunkResult 组件
+    pub fn into_standard_cards(self, book_title: &str) -> (Summary, Vec<Entity>, Vec<Card>, Vec<Relation>) {
+        let summary = self.summary;
+        let entities = self.entities;
+        let relations = self.relations;
+
+        let cards: Vec<Card> = self.cards.into_iter().map(|uc| {
+            let card_type = CardType::parse(&uc.card_type).unwrap_or(CardType::Knowledge);
+            Card {
+                title: uc.title,
+                content: uc.content,
+                card_type,
+                reference: uc.reference,
+                original_text: uc.original_text,
+                source: String::new(),
+                paraphrase: String::new(),
+                related_cards: Vec::new(),
+                source_file: String::new(),
+                chunk_id: String::new(),
+                evidence: uc.evidence,
+                location: String::new(),
+                quality_score: default_card_quality_score(),
+                status: CardStatus::Accepted,
+                reject_reason: String::new(),
+                retry_count: 0,
+                degraded_from: None,
+                unique_id: String::new(),
+            }
+        }).collect();
+
+        (summary, entities, cards, relations)
     }
 }

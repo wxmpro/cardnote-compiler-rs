@@ -15,7 +15,8 @@ use crate::providers::{
 // ═══════════════════════════════════════════════════════
 
 /// 单块最大字符数，超过则启用 Map-Reduce
-pub const CHUNK_SIZE: usize = 100000;
+/// Deepseek V4 上下文 1M tokens，约可承载 50-60 万中文字符（含 prompt 开销）
+pub const CHUNK_SIZE: usize = 500000;
 
 // ═══════════════════════════════════════════════════════
 //  LLM 调用配置
@@ -208,24 +209,9 @@ impl AppConfig {
     }
 }
 
-/// 提供商配置信息（用于显示）
-pub struct ProviderConfig {
-    pub provider: &'static str,
-    pub base_url: &'static str,
-    pub default_model: &'static str,
-}
-
-/// 获取提供商默认配置
-pub fn get_provider_config(provider: &str) -> Option<ProviderConfig> {
-    let registry = ProviderRegistry::new();
-    let p = registry.find_by_alias(provider)?;
-    let default_model = p.default_model()?;
-    Some(ProviderConfig {
-        provider: Box::leak(p.id.clone().into_boxed_str()),
-        base_url: Box::leak(p.default_base_url.clone().into_boxed_str()),
-        default_model: Box::leak(default_model.id.clone().into_boxed_str()),
-    })
-}
+// 已删除：ProviderConfig 和 get_provider_config
+// 所有配置强制从 scan_credentials() / .cardnote/providers.json 读取
+// 禁止从 ProviderRegistry 获取硬编码默认值作为运行时 fallback
 
 // ═══════════════════════════════════════════════════════
 //  引导式配置向导
@@ -302,8 +288,8 @@ pub async fn interactive_setup() -> Result<(String, String, Option<String>, Opti
     let selected = select_default_provider(&credentials).await?;
     let cred = credentials.get(&selected).unwrap();
 
-    // 保存到 .env 文件
-    save_to_env(cred)?;
+    // 保存到 .cardnote/providers.json
+    save_to_providers_json(cred)?;
 
     println!("\n{}", "✅ 配置完成！".green().bold());
     println!("   默认提供商: {}", selected.bright_cyan());
@@ -481,58 +467,70 @@ async fn select_default_provider(
     }
 }
 
-/// 保存配置到用户配置目录（~/.config/cardnote/.env）
-/// 这样可以避免把 API Key 提交进 git 仓库
-fn save_to_env(cred: &ProviderCredential) -> Result<()> {
-    // 使用用户级配置目录而非项目根目录
-    let config_dir = shellexpand::tilde("~/.config/cardnote");
-    let config_path = std::path::PathBuf::from(config_dir.as_ref());
-    std::fs::create_dir_all(&config_path).map_err(AppError::Io)?;
+/// 保存配置到 .cardnote/providers.json（新格式）
+fn save_to_providers_json(cred: &ProviderCredential) -> Result<()> {
+    let config_dir = std::path::PathBuf::from(".cardnote");
+    std::fs::create_dir_all(&config_dir).map_err(AppError::Io)?;
 
-    let env_path = config_path.join(".env");
-    let env_content = format!(
-        "# CardNote Compiler 配置\n# 修改此文件来更改默认 LLM 提供商\n\nLLM_API_KEY={}\n\
-         LLM_PROVIDER={}\n\
-         LLM_MODEL={}\n",
-        cred.api_key,
-        cred.provider_id,
-        cred.default_model.as_deref().unwrap_or("")
-    );
+    let path = config_dir.join("providers.json");
 
-    std::fs::write(&env_path, env_content).map_err(AppError::Io)?;
+    // 读取已有内容（如果有）
+    let mut existing: serde_json::Map<String, serde_json::Value> = if path.exists() {
+        std::fs::read_to_string(&path)
+            .ok()
+            .and_then(|s| serde_json::from_str(&s).ok())
+            .unwrap_or_default()
+    } else {
+        serde_json::Map::new()
+    };
+
+    let mut provider_block = serde_json::Map::new();
+    provider_block.insert("api_key".to_string(), serde_json::Value::String(cred.api_key.clone()));
+    if let Some(ref url) = cred.base_url {
+        provider_block.insert("base_url".to_string(), serde_json::Value::String(url.clone()));
+    }
+    if let Some(ref model) = cred.default_model {
+        provider_block.insert("model".to_string(), serde_json::Value::String(model.clone()));
+    }
+
+    existing.insert(cred.provider_id.clone(), serde_json::Value::Object(provider_block));
+
+    let content = serde_json::to_string_pretty(&existing)
+        .map_err(|e| AppError::Config(format!("配置序列化失败: {}", e)))?;
+    std::fs::write(&path, content).map_err(AppError::Io)?;
 
     // [C4] 设置文件权限为 600，防止多用户系统下 API key 泄露
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
         let permissions = std::fs::Permissions::from_mode(0o600);
-        std::fs::set_permissions(&env_path, permissions).map_err(AppError::Io)?;
+        std::fs::set_permissions(&path, permissions).map_err(AppError::Io)?;
     }
 
     println!(
         "  💾 配置已保存到: {}\n",
-        env_path.display().to_string().bright_black()
+        path.display().to_string().bright_black()
     );
     Ok(())
 }
 
 /// 快速配置检查 — 用于 doctor 命令
+/// 优先 .cardnote/providers.json，回退 .env，最后交互式配置
 pub async fn quick_config_check() -> Result<(String, String)> {
-    // 1. 检查 .env 或环境变量
+    // 1. 优先扫描 .cardnote/providers.json（新格式）
+    let credentials = scan_credentials();
+    if !credentials.is_empty() {
+        let first_id = credentials.keys().next().unwrap().clone();
+        let cred = credentials.get(&first_id).unwrap();
+        return Ok((cred.api_key.clone(), first_id));
+    }
+
+    // 2. 回退到 .env 或环境变量（旧格式兼容）
     if let Some(config) = AppConfig::from_env()
         && !config.api_key.is_empty()
         && config.api_key.len() > 10
     {
         return Ok((config.api_key, config.provider));
-    }
-
-    // 2. 扫描环境中的凭据
-    let credentials = scan_credentials();
-    if !credentials.is_empty() {
-        // 自动选择第一个可用的
-        let first_id = credentials.keys().next().unwrap().clone();
-        let cred = credentials.get(&first_id).unwrap();
-        return Ok((cred.api_key.clone(), first_id));
     }
 
     // 3. 引导式配置

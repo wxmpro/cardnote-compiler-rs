@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::path::PathBuf;
 
 /// 模型信息
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -966,6 +967,14 @@ pub fn scan_credentials() -> HashMap<String, ProviderCredential> {
     let mut found = HashMap::new();
     let registry = ProviderRegistry::new();
 
+    // 0. 优先扫描项目级 .cardnote/providers.json
+    let project_config_path = PathBuf::from(".cardnote/providers.json");
+    let project_config_content = if project_config_path.exists() {
+        std::fs::read_to_string(&project_config_path).ok()
+    } else {
+        None
+    };
+
     for provider in registry.list_all() {
         // 1. 检查环境变量
         if let Ok(key) = std::env::var(&provider.api_key_env_var)
@@ -985,7 +994,15 @@ pub fn scan_credentials() -> HashMap<String, ProviderCredential> {
             continue;
         }
 
-        // 2. 检查配置文件
+        // 2. 优先检查项目级 .cardnote/providers.json
+        if let Some(ref content) = project_config_content {
+            if let Some(cred) = extract_credential_from_file(provider, content, ".cardnote/providers.json") {
+                found.insert(provider.id.clone(), cred);
+                continue;
+            }
+        }
+
+        // 3. 检查 provider 默认配置文件路径
         for path in &provider.config_file_paths {
             let expanded = shellexpand::tilde(path).to_string();
             if let Ok(content) = std::fs::read_to_string(&expanded)

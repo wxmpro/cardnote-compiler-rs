@@ -539,131 +539,34 @@ impl Pipeline {
         doc_type: DocumentType,
         book_title: &str,
     ) -> Result<CompilationResult> {
-        println!("\n[模式] 单轮全量编译");
+        println!("\n[模式] 单轮 Unified 编译（1 次请求）");
         println!("{}", "-".repeat(60));
 
         let mut diagnostics = CompilationDiagnostics::default();
-        let ctx = &self.ctx;
-        let load_prompt = |name: &str| ctx.load_prompt(name);
+        let ctx = self.ctx.clone();
 
-        // 摘要阶段（含缓存）
-        let summary =
-            if let Some(cached) = ctx.try_load_stage::<Summary>("summary", document, "summary") {
-                println!("  💾 摘要缓存命中");
-                cached
-            } else {
-                match with_retry("摘要", || generate_summary(document, ctx, &load_prompt)).await {
-                    Ok(s) => {
-                        println!("  ✓ 摘要完成");
-                        // 仅缓存非空结果（避免空结果污染缓存）
-                        if !s.title.is_empty() || !s.key_points.is_empty() {
-                            ctx.save_stage("summary", document, "summary", &s);
-                        }
-                        s
-                    }
-                    Err(e) => {
-                        let err_msg = format!("{}", e);
-                        println!("  ✗ 摘要失败: {}", err_msg);
-                        diagnostics.failures.push(StageFail {
-                            stage: "summary".to_string(),
-                            error: err_msg,
-                            retry_count: 3,
-                            final_status: "failed".to_string(),
-                        });
-                        Summary::default()
-                    }
-                }
-            };
-
-        // 实体阶段（含缓存）
-        let entities = if let Some(cached) =
-            ctx.try_load_stage::<Vec<Entity>>("entities", document, "entity_extraction")
-        {
-            println!("  💾 实体缓存命中 — {} 个实体", cached.len());
-            cached
-        } else {
-            match with_retry("实体", || {
-                extract_entities(document, ctx, ctx, &load_prompt)
-            })
-            .await
-            {
-                Ok(e) => {
-                    println!("  ✓ 标注完成 — 识别 {} 个实体", e.len());
-                    if !e.is_empty() {
-                        ctx.save_stage("entities", document, "entity_extraction", &e);
-                    }
-                    e
-                }
-                Err(e) => {
-                    let err_msg = format!("{}", e);
-                    println!("  ✗ 实体提取失败: {}", err_msg);
-                    diagnostics.failures.push(StageFail {
-                        stage: "entities".to_string(),
-                        error: err_msg,
-                        retry_count: 3,
-                        final_status: "failed".to_string(),
-                    });
-                    Vec::new()
-                }
-            }
-        };
-
-        // 卡片阶段
-        let cards = match with_retry("卡片", || {
-            generate_cards(document, doc_type, book_title, ctx, &load_prompt)
+        let result = match with_retry("unified", || {
+            compile_chunk_unified(
+                ctx.clone(),
+                document.to_string(),
+                String::new(),
+                doc_type,
+                book_title.to_string(),
+            )
         })
         .await
         {
-            Ok(c) => {
-                println!("  ✓ 卡片完成 — 生成 {} 张卡片", c.len());
-                c
-            }
+            Ok(r) => r,
             Err(e) => {
                 let err_msg = format!("{}", e);
-                println!("  ✗ 卡片生成失败: {}", err_msg);
+                println!("  ✗ Unified 编译失败: {}", err_msg);
                 diagnostics.failures.push(StageFail {
-                    stage: "cards".to_string(),
+                    stage: "unified".to_string(),
                     error: err_msg,
                     retry_count: 3,
                     final_status: "failed".to_string(),
                 });
-                Vec::new()
-            }
-        };
-
-        // 图谱阶段（含缓存）
-        let graph = if let Some(cached) =
-            ctx.try_load_stage::<KnowledgeGraph>("graph", document, "relation_graph")
-        {
-            println!("  💾 图谱缓存命中 — {} 条关系", cached.relations.len());
-            cached
-        } else {
-            match with_retry("图谱", || {
-                build_graph(document, &entities, ctx, ctx, &load_prompt)
-            })
-            .await
-            {
-                Ok(g) => {
-                    println!("  ✓ 图谱完成 — {} 条关系", g.relations.len());
-                    if !g.relations.is_empty() {
-                        ctx.save_stage("graph", document, "relation_graph", &g);
-                    }
-                    g
-                }
-                Err(e) => {
-                    let err_msg = format!("{}", e);
-                    println!("  ✗ 图谱构建失败: {}", err_msg);
-                    diagnostics.failures.push(StageFail {
-                        stage: "graph".to_string(),
-                        error: err_msg,
-                        retry_count: 3,
-                        final_status: "failed".to_string(),
-                    });
-                    KnowledgeGraph {
-                        entities: Vec::new(),
-                        relations: Vec::new(),
-                    }
-                }
+                ChunkResult::default()
             }
         };
 
@@ -671,9 +574,9 @@ impl Pipeline {
         println!("编译完成！");
         println!(
             "  实体: {} 个  |  卡片: {} 张  |  关系: {} 条",
-            entities.len(),
-            cards.len(),
-            graph.relations.len()
+            result.entities.len(),
+            result.cards.len(),
+            result.relations.len()
         );
         if !diagnostics.failures.is_empty() {
             println!(
@@ -684,15 +587,18 @@ impl Pipeline {
         println!("{}", "=".repeat(60));
 
         // 输出 LLM 用量报告并清理内存
-        let report = ctx.client.usage_report().await;
+        let report = self.ctx.client.usage_report().await;
         println!("\n{}", report);
-        ctx.client.clear_usage().await;
+        self.ctx.client.clear_usage().await;
 
         Ok(CompilationResult {
             source_file: source_file.to_string(),
-            summary,
-            cards,
-            graph,
+            summary: result.summary,
+            cards: result.cards,
+            graph: KnowledgeGraph {
+                entities: result.entities.clone(),
+                relations: result.relations,
+            },
             chunks: Vec::new(),
             diagnostics,
         })
@@ -762,7 +668,7 @@ impl Pipeline {
             let bt = book_title.to_string();
             handles.push(tokio::spawn(async move {
                 let _permit = permit;
-                let result = compile_chunk(ctx, doc, title, doc_type, bt).await;
+                let result = compile_chunk_unified(ctx, doc, title, doc_type, bt).await;
                 (idx, result)
             }));
         }
@@ -821,7 +727,7 @@ impl Pipeline {
                 if let Some((title, doc)) = chunks_for_retry.get(*idx) {
                     println!("  重试块 {}/{}...", idx + 1, chunks_len);
                     let ctx = self.ctx.clone();
-                    match compile_chunk(
+                    match compile_chunk_unified(
                         ctx,
                         doc.clone(),
                         title.clone(),
@@ -1186,6 +1092,64 @@ async fn compile_chunk(
         entities,
         cards,
         relations: graph.relations,
+    })
+}
+
+/// Unified 编译模式：一次 LLM 请求生成 summary + entities + cards + relations
+async fn compile_chunk_unified(
+    ctx: CompileContext,
+    document: String,
+    title_path: String,
+    _doc_type: DocumentType,
+    book_title: String,
+) -> Result<ChunkResult> {
+    let ctx_ref = &ctx;
+
+    // 加载 unified prompt
+    let prompt_template = ctx_ref.load_prompt("unified")?;
+    let prompt = prompt_template.replace("{document}", &document);
+
+    let system = "你是一位资深的内容分析师、知识策展人和知识图谱专家。你的核心能力是从复杂文本中同时完成：结构化摘要提取、实体识别、知识卡片生成和关系图谱构建。所有输出必须严格基于原文，不添加原文没有的信息。".to_string();
+
+    // 调用 JSON mode
+    let response = ctx_ref
+        .call_llm_json(
+            vec![
+                crate::models::LlmMessage {
+                    role: "system".to_string(),
+                    content: system,
+                },
+                crate::models::LlmMessage {
+                    role: "user".to_string(),
+                    content: prompt,
+                },
+            ],
+            Some(32768), // v4-pro 单次输出上限 384K，给足空间避免截断
+        )
+        .await
+        .map_err(|e| {
+            AppError::Api(format!("Unified 编译请求失败: {}", e))
+        })?;
+
+    // 解析 JSON 响应
+    let unified: crate::models::UnifiedChunkResponse = serde_json::from_value(response.clone())
+        .map_err(|e| {
+            AppError::JsonParse(format!(
+                "Unified 响应 JSON 解析失败: {}\n原始响应前500字: {}",
+                e,
+                response.to_string().chars().take(500).collect::<String>()
+            ))
+        })?;
+
+    let (summary, entities, cards, relations) = unified.into_standard_cards(&book_title);
+
+    Ok(ChunkResult {
+        document: document.clone(),
+        title_path,
+        summary,
+        entities,
+        cards,
+        relations,
     })
 }
 
