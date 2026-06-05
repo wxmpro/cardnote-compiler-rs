@@ -78,30 +78,6 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// 仅运行 AI 摘要
-    Summary {
-        /// 输入文件
-        file: String,
-        #[arg(short, long, default_value = "./output")]
-        output: String,
-    },
-    /// 仅运行 AI 标注
-    Annotate {
-        /// 输入文件
-        file: String,
-    },
-    /// 仅运行 AI 卡片生成
-    Cards {
-        /// 输入文件
-        file: String,
-        #[arg(short, long, default_value = "./output")]
-        output: String,
-    },
-    /// 仅运行 AI 图谱
-    Graph {
-        /// 输入文件
-        file: String,
-    },
     /// 重新配置 API
     Init,
     /// 环境诊断
@@ -146,25 +122,6 @@ async fn main() {
     }
 }
 
-// [H5] 阶段命令共享参数，避免上帝函数传参冗长
-struct RunArgs {
-    provider: Option<String>,
-    model: Option<String>,
-    api_key: Option<String>,
-    base_url: Option<String>,
-}
-
-impl From<&Cli> for RunArgs {
-    fn from(cli: &Cli) -> Self {
-        Self {
-            provider: cli.provider.clone(),
-            model: cli.model.clone(),
-            api_key: cli.api_key.clone(),
-            base_url: cli.base_url.clone(),
-        }
-    }
-}
-
 // [H5] 主调度函数：职责仅为解析 CLI 并路由到对应处理器
 async fn run() -> cardnote_compiler::error::Result<()> {
     // 加载 .env
@@ -175,7 +132,6 @@ async fn run() -> cardnote_compiler::error::Result<()> {
     }
 
     let cli = Cli::parse();
-    let args: RunArgs = (&cli).into();
 
     match cli.command {
         Some(Commands::Init) => {
@@ -187,14 +143,6 @@ async fn run() -> cardnote_compiler::error::Result<()> {
             Ok(())
         }
         Some(Commands::Quality { file }) => handle_quality(&file).await,
-        Some(Commands::Summary { file, output }) => {
-            handle_phase("summary", &file, &output, args).await
-        }
-        Some(Commands::Annotate { file }) => {
-            handle_phase("annotate", &file, "./output", args).await
-        }
-        Some(Commands::Cards { file, output }) => handle_phase("cards", &file, &output, args).await,
-        Some(Commands::Graph { file }) => handle_phase("graph", &file, "./output", args).await,
         Some(Commands::Scan {
             dir,
             recursive,
@@ -567,55 +515,6 @@ async fn handle_compile(cli: Cli) -> cardnote_compiler::error::Result<()> {
         }
     }
 
-    Ok(())
-}
-
-// [H5] 阶段命令处理器（summary / annotate / cards / graph）
-async fn handle_phase(
-    phase: &str,
-    file: &str,
-    output_dir: &str,
-    args: RunArgs,
-) -> cardnote_compiler::error::Result<()> {
-    let (api_key, provider) = get_api_config(args.api_key, args.provider).await?;
-    let client = create_client(&provider, &api_key, args.model, args.base_url)?;
-    let pipeline = Pipeline::new(client);
-
-    println!("读取文件: {}", file);
-    let document = convert_to_markdown_async(file).await?;
-    // [H3] 使用 chars().count() 获取真实字符数（中文不再虚高 3 倍）
-    println!("  {} {} 字符", "✓".green(), document.chars().count());
-
-    match phase {
-        "summary" => {
-            let result = pipeline.run_summary(&document).await?;
-            println!("\n{}", "=".repeat(60));
-            println!("{}", result.to_markdown());
-        }
-        "annotate" => {
-            let entities = pipeline.run_entities(&document).await?;
-            for e in &entities {
-                println!("  - {} ({})", e.name, e.entity_type);
-            }
-            println!("\n共识别 {} 个实体", entities.len());
-        }
-        "cards" => {
-            let cards = pipeline.run_cards(&document, "未命名").await?;
-            cardnote_compiler::output::save_cards_by_type(Path::new(output_dir), &cards).await?;
-            println!("\n共生成 {} 张卡片", cards.len());
-            println!("已保存到: {}/", output_dir);
-        }
-        "graph" => {
-            let entities = pipeline.run_entities(&document).await?;
-            println!("  实体: {} 个", entities.len());
-            let graph = pipeline.run_graph(&document, &entities).await?;
-            println!();
-            println!("{}", graph.to_mermaid());
-        }
-        _ => {}
-    }
-
-    println!("\n{} {} 完成", "✓".green(), phase);
     Ok(())
 }
 

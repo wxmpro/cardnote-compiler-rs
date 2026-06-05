@@ -4,7 +4,6 @@ use std::sync::{Arc, LazyLock};
 
 use regex::Regex;
 use serde::{Deserialize, Serialize};
-use tokio::sync::Semaphore;
 
 use crate::api::LlmClient;
 use crate::doc_type::{DocTypeDetector, DocumentType};
@@ -13,11 +12,8 @@ use crate::models::{
     Card, ChunkInfo, CompilationDiagnostics, CompilationResult, Entity, KnowledgeGraph, LlmMessage,
     Relation, StageFail, Summary,
 };
-use crate::stages::cards::{CardPlanner, generate_cards};
 use crate::stages::common::{ChatFn, ChatJsonFn};
-use crate::stages::entities::{extract_entities, unify_entities};
-use crate::stages::graph::build_graph;
-use crate::stages::summary::generate_summary;
+use crate::stages::entities::unify_entities;
 
 // ═══════════════════════════════════════════════════════
 //  共享 FNV-1a 哈希函数
@@ -353,8 +349,6 @@ impl Pipeline {
         let doc_char_count = document.chars().count();
         println!("  文档大小: {} 字符", doc_char_count);
         let doc_detection = DocTypeDetector::detect_with_confidence(document);
-        let plan_summary = CardPlanner::summary(doc_detection.doc_type, doc_char_count);
-        println!("  卡片规划: {}", plan_summary);
 
         // [H3] 按字符数判断是否需要分块
         if document.chars().count() <= self.ctx.chunk_size {
@@ -366,52 +360,7 @@ impl Pipeline {
         }
     }
 
-    /// 仅运行 AI 摘要
-    pub async fn run_summary(&self, document: &str) -> Result<Summary> {
-        println!("\n[阶段] AI 摘要");
-        println!("{}", "-".repeat(60));
-        let ctx = &self.ctx;
-        let result = generate_summary(document, ctx, &|name| ctx.load_prompt(name)).await?;
-        println!("  ✓ 标题: {}", result.title);
-        Ok(result)
-    }
-
-    /// 仅运行 AI 标注
-    pub async fn run_entities(&self, document: &str) -> Result<Vec<Entity>> {
-        println!("\n[阶段] AI 标注 — 实体识别");
-        println!("{}", "-".repeat(60));
-        let ctx = &self.ctx;
-        let result = extract_entities(document, ctx, ctx, &|name| ctx.load_prompt(name)).await?;
-        println!("  ✓ 识别 {} 个实体", result.len());
-        Ok(result)
-    }
-
-    /// 仅运行 AI 卡片
-    pub async fn run_cards(&self, document: &str, book_title: &str) -> Result<Vec<Card>> {
-        println!("\n[阶段] AI 卡片 — 10 种卡片类型");
-        println!("{}", "-".repeat(60));
-        let ctx = &self.ctx;
-        let doc_type = DocTypeDetector::detect(document);
-        let result = generate_cards(document, doc_type, book_title, ctx, &|name| {
-            ctx.load_prompt(name)
-        })
-        .await?;
-        println!("  ✓ 生成 {} 张卡片", result.len());
-        Ok(result)
-    }
-
-    /// 仅运行 AI 图谱
-    pub async fn run_graph(&self, document: &str, entities: &[Entity]) -> Result<KnowledgeGraph> {
-        println!("\n[阶段] AI 图谱 — 知识关系网络");
-        println!("{}", "-".repeat(60));
-        let ctx = &self.ctx;
-        let result =
-            build_graph(document, entities, ctx, ctx, &|name| ctx.load_prompt(name)).await?;
-        println!("  ✓ {} 条关系", result.relations.len());
-        Ok(result)
-    }
-
-    /// 多文档策展编译
+    /// 单文档 Unified 编译
     async fn run_single(
         &self,
         document: &str,
@@ -531,31 +480,14 @@ impl Pipeline {
             println!("  🔄 继续编译未完成的块: {:?}", pending);
         }
 
-        // 2b. 编译未完成的块（串行：一次一个请求，避免 API 429）
-        let semaphore = Arc::new(Semaphore::new(1));
-        let mut handles = Vec::new();
+        // 2b. 编译未完成的块（完全串行，一次一个请求）
         for idx in &pending {
-            let idx = *idx; // copy to avoid borrow issue
-            let permit = semaphore
-                .clone()
-                .acquire_owned()
-                .await
-                .map_err(|e| AppError::TaskPanic(format!("并发信号量获取失败: {}", e)))?;
+            let idx = *idx;
             let ctx = self.ctx.clone();
             let (title, doc) = chunks[idx].clone();
             println!("  处理块 {}/{}...", idx + 1, chunks_len);
             let bt = book_title.to_string();
-            handles.push(tokio::spawn(async move {
-                let _permit = permit;
-                let result = compile_chunk_unified(ctx, doc, title, doc_type, bt).await;
-                (idx, result)
-            }));
-        }
-        for handle in handles {
-            let (idx, result) = handle
-                .await
-                .map_err(|e| AppError::TaskPanic(format!("并发任务 panic: {}", e)))?;
-            match result {
+            match compile_chunk_unified(ctx, doc, title, doc_type, bt).await {
                 Ok(result) => {
                     println!(
                         "  ✓ 块 {}/{} 完成 — 实体 {} 个 | 卡片 {} 张",

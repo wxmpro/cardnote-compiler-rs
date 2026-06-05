@@ -17,19 +17,20 @@ use crate::providers::{
 /// 根据模型上下文长度计算单块最大字符数
 ///
 /// 计算逻辑：
-/// - prompt 模板约 4000 tokens
+/// - prompt 模板约 4000 tokens，但 80% 命中缓存（系统提示复用），实际只消耗 800 新 tokens
 /// - 输出（JSON 卡片+实体）约 16000 tokens
-/// - 留给文档的 tokens = context_length - prompt - output - safety_margin
-/// - 中文字符 ≈ tokens * 0.5（保守估计）
+/// - 中文字符平均 1.3 tokens/字符（DeepSeek/Kimi/GLM 中文 tokenizer）
+/// - 1 token ≈ 0.77 字符（而非之前的保守 0.5）
 pub fn chunk_size_for_context(context_length: usize) -> usize {
-    let prompt_tokens = 4000;
+    let effective_prompt_tokens = 800; // 4000 * 20%，缓存命中 80%
     let output_tokens = 16000;
     let safety_margin = 2000;
+    let tokens_per_char: f64 = 1.3;
 
     let available_tokens = context_length
-        .saturating_sub(prompt_tokens + output_tokens + safety_margin);
+        .saturating_sub(effective_prompt_tokens + output_tokens + safety_margin);
 
-    let chars = (available_tokens as f64 * 0.5) as usize;
+    let chars = (available_tokens as f64 / tokens_per_char) as usize;
 
     // 最小 10000 字符，最大 500000 字符
     chars.clamp(10000, 500_000)

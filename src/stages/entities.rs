@@ -223,9 +223,49 @@ fn is_same_entity(a: &Entity, b: &Entity) -> bool {
         return true;
     }
 
+    // 英文名匹配：如 "丹尼尔·卡尼曼（Daniel Kahneman）" 和 "Kahneman"
+    let en_a = extract_english_name(&a.name);
+    let en_b = extract_english_name(&b.name);
+    if let (Some(ea), Some(eb)) = (&en_a, &en_b) {
+        // 全名匹配或姓氏匹配
+        if ea == eb || ea.contains(eb) || eb.contains(ea) {
+            return true;
+        }
+        // 姓氏匹配（取最后一个词）
+        let surname_a = ea.split_whitespace().last().unwrap_or(ea);
+        let surname_b = eb.split_whitespace().last().unwrap_or(eb);
+        if surname_a == surname_b && surname_a.len() >= 3 {
+            return true;
+        }
+    }
+
     // 编辑距离匹配（适用于拼写变体）
     let sim = name_similarity(&na, &nb);
     sim >= 0.85
+}
+
+/// 从名称中提取括号内的英文名
+/// "丹尼尔·卡尼曼（Daniel Kahneman）" → "Daniel Kahneman"
+fn extract_english_name(name: &str) -> Option<String> {
+    // 匹配中文括号（）
+    if let Some(start) = name.find('（') {
+        if let Some(end) = name[start..].find('）') {
+            let en = name[start + 1..start + end].trim();
+            if !en.is_empty() && en.chars().any(|c| c.is_ascii_alphabetic()) {
+                return Some(en.to_lowercase());
+            }
+        }
+    }
+    // 匹配英文括号 ()
+    if let Some(start) = name.find('(') {
+        if let Some(end) = name[start..].find(')') {
+            let en = name[start + 1..start + end].trim();
+            if !en.is_empty() && en.chars().any(|c| c.is_ascii_alphabetic()) {
+                return Some(en.to_lowercase());
+            }
+        }
+    }
+    None
 }
 
 /// 名称规范化

@@ -312,7 +312,11 @@ for level, title, page in toc:
 
 pages = []
 for i in range(doc.page_count):
-    text = doc[i].get_text().strip()
+    # 尝试 get_text("markdown") 保留段落/列表/表格结构（PyMuPDF 1.24+）
+    try:
+        text = doc[i].get_text("markdown").strip()
+    except Exception:
+        text = doc[i].get_text().strip()
     if not text:
         continue
 
