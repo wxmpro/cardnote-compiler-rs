@@ -780,7 +780,7 @@ pub struct UnifiedCard {
 
 impl UnifiedChunkResponse {
     /// 将 Unified 响应转换为标准 ChunkResult 组件
-    pub fn into_standard_cards(self, book_title: &str) -> (Summary, Vec<Entity>, Vec<Card>, Vec<Relation>) {
+    pub fn into_standard_cards(self, _book_title: &str) -> (Summary, Vec<Entity>, Vec<Card>, Vec<Relation>) {
         let summary = self.summary;
         let entities = self.entities;
         let relations = self.relations;

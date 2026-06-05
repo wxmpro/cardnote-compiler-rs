@@ -1031,77 +1031,13 @@ where
         .unwrap_or_else(|| crate::error::AppError::TaskPanic(format!("{} 全部重试失败", name))))
 }
 
-async fn compile_chunk(
-    ctx: CompileContext,
-    document: String,
-    title_path: String,
-    doc_type: DocumentType,
-    book_title: String,
-) -> Result<ChunkResult> {
-    let ctx_ref = &ctx;
-    let load_prompt = |name: &str| ctx_ref.load_prompt(name);
-
-    // 全部串行：一次一个 LLM 请求，避免并发 429
-    // 每个 stage 独立缓存，断点续编译时命中缓存可跳过 LLM 调用
-
-    // 阶段 1: Summary（含缓存）
-    let summary = if let Some(cached) = ctx_ref.try_load_stage::<Summary>("summary", &document, "summary") {
-        cached
-    } else {
-        let s = with_retry("摘要", || generate_summary(&document, ctx_ref, &load_prompt)).await?;
-        if !s.title.is_empty() || !s.key_points.is_empty() {
-            ctx_ref.save_stage("summary", &document, "summary", &s);
-        }
-        s
-    };
-
-    // 阶段 2: Entities（含缓存，串行在 summary 之后）
-    let entities = if let Some(cached) = ctx_ref.try_load_stage::<Vec<Entity>>("entities", &document, "entity_extraction") {
-        cached
-    } else {
-        let e = with_retry("实体", || extract_entities(&document, ctx_ref, ctx_ref, &load_prompt))
-            .await
-            .unwrap_or_default();
-        if !e.is_empty() {
-            ctx_ref.save_stage("entities", &document, "entity_extraction", &e);
-        }
-        e
-    };
-
-    // 阶段 3: Cards
-    let cards = with_retry("卡片", || {
-        generate_cards(&document, doc_type, &book_title, ctx_ref, &load_prompt)
-    })
-    .await?;
-
-    // 阶段 4: Graph（含缓存，依赖 entities 结果）
-    let graph = if let Some(cached) = ctx_ref.try_load_stage::<KnowledgeGraph>("graph", &document, "relation_graph") {
-        cached
-    } else {
-        let g = with_retry("图谱", || build_graph(&document, &entities, ctx_ref, ctx_ref, &load_prompt)).await?;
-        if !g.relations.is_empty() {
-            ctx_ref.save_stage("graph", &document, "relation_graph", &g);
-        }
-        g
-    };
-
-    Ok(ChunkResult {
-        document: document.clone(),
-        title_path,
-        summary,
-        entities,
-        cards,
-        relations: graph.relations,
-    })
-}
-
 /// Unified 编译模式：一次 LLM 请求生成 summary + entities + cards + relations
 async fn compile_chunk_unified(
     ctx: CompileContext,
     document: String,
     title_path: String,
     _doc_type: DocumentType,
-    book_title: String,
+    _book_title: String,
 ) -> Result<ChunkResult> {
     let ctx_ref = &ctx;
 
