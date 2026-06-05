@@ -2,6 +2,34 @@
 
 All notable changes to cardnote-compiler-rs are documented here.
 
+## [0.1.53] - 2026-06-05
+
+### Changed
+
+- **PDF/OCR 工具调用适配 conda 环境隔离** (`converter.rs`, `diagnostics.rs`)
+  - 新增 `python_for_purpose()`：根据用途路由到正确的 conda 环境 python
+    - `pymupdf`/`markitdown`/`batch_ocr`/`pytesseract` → `CARDNOTE_PYTHON_PADDLEOCR` 或自动检测 paddleocr 环境
+    - `magic_pdf`/`mineru` → `CARDNOTE_PYTHON_MINERU` 或自动检测 mineru 环境
+  - 新增 `find_magic_pdf()`：同时支持 `magic-pdf` CLI 和向后兼容 `mineru` CLI
+    - 环境变量：`MAGIC_PDF_PATH`（新） > `MINERU_PATH`（兼容）
+    - PATH 搜索：`magic-pdf` > `mineru`
+    - conda 自动检测：`miniforge3`/`anaconda3`/`.conda` 的 `mineru` 环境
+  - 所有 `Command::new("python3")` 调用点替换为对应环境的 python：
+    - `read_pdf_raw()` → paddleocr 环境
+    - `read_pdf_expert_ocr()` → paddleocr 环境
+    - `read_pdf_ocr_fallback()` → paddleocr 环境
+    - `split_pdf_by_toc()` → paddleocr 环境
+    - `save_pdf_range()` → paddleocr 环境
+    - `read_markitdown()` → paddleocr 环境
+  - magic-pdf CLI 参数适配：移除旧版 `-b pipeline`，使用标准 `-m ocr -l ch`
+  - `diagnostics.rs`：MinerU 模块检查改为 magic-pdf CLI 可用性检查
+
+### Fixed
+- **base 环境不再混装 magic-pdf**：卸载 base 环境 magic-pdf，避免与 paddleocr/OCR 工具链冲突
+- **模型目录迁移**：`/tmp/mineru_models` → `~/miniforge3/envs/mineru/mineru_models`，避免 `/tmp` 被清理
+
+---
+
 ## [0.1.23] - 2026-05-31
 
 ### Added

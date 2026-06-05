@@ -291,7 +291,8 @@ fn read_pdf_single(file_path: &str, is_scanned: bool) -> Result<String> {
 
 /// PyMuPDF 裸提取（带 TOC 标题注入）
 fn read_pdf_raw(file_path: &str) -> Result<String> {
-    let output = Command::new("python3")
+    let python = python_for_purpose("pymupdf");
+    let output = Command::new(&python)
         .arg("-c")
         .arg(
             r###"
@@ -356,31 +357,109 @@ print("\n\n".join(pages))
     Ok(result.cleaned_text)
 }
 
+/// 根据用途返回正确的 Python 解释器路径
+///
+/// 环境隔离策略：
+/// - paddleocr: PyMuPDF, PaddleOCR, markitdown, batch_ocr.py, pytesseract
+/// - mineru: magic-pdf CLI 所在环境（magic-pdf 是独立可执行文件，此函数用于其 Python 依赖）
+///
+/// 环境变量优先级（最高）：
+/// 1. CARDNOTE_PYTHON_PADDLEOCR → paddleocr 环境 python
+/// 2. CARDNOTE_PYTHON_MINERU → mineru 环境 python
+///
+/// 自动检测优先级（次高）：
+/// - miniforge3/envs/{env}/bin/python3
+/// - anaconda3/envs/{env}/bin/python3
+/// - .conda/envs/{env}/bin/python3
+///
+/// 回退：系统默认 python3
+fn python_for_purpose(purpose: &str) -> String {
+    let env_var = match purpose {
+        "paddleocr" | "pymupdf" | "markitdown" | "batch_ocr" | "pytesseract" => {
+            "CARDNOTE_PYTHON_PADDLEOCR"
+        }
+        "mineru" | "magic_pdf" => "CARDNOTE_PYTHON_MINERU",
+        _ => "",
+    };
+    if !env_var.is_empty() {
+        if let Ok(path) = std::env::var(env_var) {
+            if std::path::Path::new(&path).exists() {
+                return path;
+            }
+        }
+    }
+
+    if let Ok(home) = std::env::var("HOME") {
+        let env_name = match purpose {
+            "paddleocr" | "pymupdf" | "markitdown" | "batch_ocr" | "pytesseract" => {
+                "paddleocr"
+            }
+            "mineru" | "magic_pdf" => "mineru",
+            _ => "",
+        };
+        if !env_name.is_empty() {
+            let candidates = [
+                format!("{}/miniforge3/envs/{}/bin/python3", home, env_name),
+                format!("{}/anaconda3/envs/{}/bin/python3", home, env_name),
+                format!("{}/.conda/envs/{}/bin/python3", home, env_name),
+            ];
+            for path in candidates {
+                if std::path::Path::new(&path).exists() {
+                    return path;
+                }
+            }
+        }
+    }
+
+    "python3".to_string()
+}
+
 /// 扫描版 PDF → OCR 提取
 ///
 /// 尝试顺序：
-///   1. MinerU（首选，质量最好）
+///   1. magic-pdf / MinerU（首选，质量最好）
 ///   2. pdf2image + pytesseract（fallback，需安装 tesseract）
 ///
-/// 查找 mineru 可执行文件路径
-fn find_mineru() -> Option<String> {
-    // 1. 检查 $MINERU_PATH 环境变量
+/// 查找 magic-pdf / mineru 可执行文件路径
+fn find_magic_pdf() -> Option<String> {
+    // 1. 检查 $MAGIC_PDF_PATH 环境变量
+    if let Ok(path) = std::env::var("MAGIC_PDF_PATH")
+        && std::path::Path::new(&path).exists()
+    {
+        return Some(path);
+    }
+
+    // 2. 检查 $MINERU_PATH 环境变量（向后兼容）
     if let Ok(path) = std::env::var("MINERU_PATH")
         && std::path::Path::new(&path).exists()
     {
         return Some(path);
     }
 
-    // 2. 尝试 PATH 中的 mineru
+    // 3. 尝试 PATH 中的 magic-pdf
+    if let Ok(out) = Command::new("which").arg("magic-pdf").output()
+        && out.status.success()
+    {
+        return Some(String::from_utf8_lossy(&out.stdout).trim().to_string());
+    }
+
+    // 4. 尝试 PATH 中的 mineru（向后兼容）
     if let Ok(out) = Command::new("which").arg("mineru").output()
         && out.status.success()
     {
         return Some(String::from_utf8_lossy(&out.stdout).trim().to_string());
     }
 
-    // 3. 尝试标准安装位置（相对于 home）
+    // 5. 尝试 conda env 自动检测
     if let Ok(home) = std::env::var("HOME") {
         let candidates = [
+            format!("{}/miniforge3/envs/mineru/bin/magic-pdf", home),
+            format!("{}/anaconda3/envs/mineru/bin/magic-pdf", home),
+            format!("{}/.conda/envs/mineru/bin/magic-pdf", home),
+            // 向后兼容：mineru
+            format!("{}/miniforge3/envs/mineru/bin/mineru", home),
+            format!("{}/anaconda3/envs/mineru/bin/mineru", home),
+            format!("{}/.conda/envs/mineru/bin/mineru", home),
             format!("{}/.venv/bin/mineru", home),
             format!("{}/.local/bin/mineru", home),
             format!("{}/venv/bin/mineru", home),
@@ -392,8 +471,13 @@ fn find_mineru() -> Option<String> {
         }
     }
 
-    // 4. 尝试系统标准路径
-    let system_paths = ["/usr/local/bin/mineru", "/opt/mineru/bin/mineru"];
+    // 6. 尝试系统标准路径
+    let system_paths = [
+        "/usr/local/bin/magic-pdf",
+        "/opt/mineru/bin/magic-pdf",
+        "/usr/local/bin/mineru",
+        "/opt/mineru/bin/mineru",
+    ];
     for path in &system_paths {
         if std::path::Path::new(path).exists() {
             return Some(path.to_string());
@@ -423,9 +507,10 @@ fn read_pdf_expert_ocr(file_path: &str) -> Result<String> {
     }
 
     // 验证环境：Python 3
-    let python_check = Command::new("python3").arg("--version").output();
+    let python = python_for_purpose("batch_ocr");
+    let python_check = Command::new(&python).arg("--version").output();
     if python_check.is_err() {
-        eprintln!("  ℹ Python 3 不可用，转到 MinerU");
+        eprintln!("  ℹ Python 3 不可用，转到 magic-pdf");
         return read_pdf_scan_fallback_mineru(file_path);
     }
 
@@ -449,7 +534,7 @@ fn read_pdf_expert_ocr(file_path: &str) -> Result<String> {
 
     // 调用 batch_ocr.py
     eprintln!("  → 调用 pdf-expert-batch-ocr...");
-    let result = Command::new("python3")
+    let result = Command::new(&python)
         .args([
             batch_ocr_script.to_str().unwrap_or("batch_ocr.py"),
             "--queue",
@@ -472,11 +557,11 @@ fn read_pdf_expert_ocr(file_path: &str) -> Result<String> {
         Ok(o) if o.status.success() => {}
         Ok(o) => {
             let stderr = String::from_utf8_lossy(&o.stderr);
-            eprintln!("  ℹ pdf-expert-batch-ocr 失败: {}\n  转到 MinerU", stderr);
+            eprintln!("  ℹ pdf-expert-batch-ocr 失败: {}\n  转到 magic-pdf", stderr);
             return read_pdf_scan_fallback_mineru(file_path);
         }
         Err(e) => {
-            eprintln!("  ℹ pdf-expert-batch-ocr 执行错误: {}\n  转到 MinerU", e);
+            eprintln!("  ℹ pdf-expert-batch-ocr 执行错误: {}\n  转到 magic-pdf", e);
             return read_pdf_scan_fallback_mineru(file_path);
         }
     }
@@ -509,12 +594,12 @@ fn read_pdf_expert_ocr(file_path: &str) -> Result<String> {
     Ok(crate::quality::clean_text(&text))
 }
 
-/// MinerU fallback（当 pdf-expert-batch-ocr 不可用时）
+/// magic-pdf / MinerU fallback（当 pdf-expert-batch-ocr 不可用时）
 fn read_pdf_scan_fallback_mineru(file_path: &str) -> Result<String> {
-    // 先尝试 MinerU
-    let mineru_path = find_mineru();
+    // 先尝试 magic-pdf / MinerU
+    let magic_pdf_path = find_magic_pdf();
 
-    let mineru_path = match mineru_path {
+    let magic_pdf_path = match magic_pdf_path {
         Some(p) => p,
         None => return read_pdf_ocr_fallback(file_path),
     };
@@ -522,25 +607,23 @@ fn read_pdf_scan_fallback_mineru(file_path: &str) -> Result<String> {
     let temp_dir = tempfile::tempdir()
         .map_err(|e| AppError::Conversion(format!("创建临时目录失败: {}", e)))?;
 
-    let result = Command::new(&mineru_path)
+    let result = Command::new(&magic_pdf_path)
         .args([
             "-p",
             file_path,
             "-o",
             &temp_dir.path().to_string_lossy(),
-            "-l",
-            "ch",
-            "-b",
-            "pipeline",
             "-m",
             "ocr",
+            "-l",
+            "ch",
         ])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .output()
         .map_err(|e| {
             AppError::Conversion(format!(
-                "MinerU 转换失败 (预期 {} 秒内完成): {}\n{}",
+                "magic-pdf 转换失败 (预期 {} 秒内完成): {}\n{}",
                 PDF_CONVERT_TIMEOUT,
                 e,
                 crate::scan::ocr_guidance_for_file(file_path)
@@ -550,7 +633,7 @@ fn read_pdf_scan_fallback_mineru(file_path: &str) -> Result<String> {
     if !result.status.success() {
         let stderr = String::from_utf8_lossy(&result.stderr);
         return Err(AppError::Conversion(format!(
-            "MinerU 转换失败: {}{}",
+            "magic-pdf 转换失败: {}{}",
             stderr,
             crate::scan::ocr_guidance_for_file(file_path)
         )));
@@ -589,10 +672,10 @@ fn read_pdf_scan(file_path: &str) -> Result<String> {
         return Ok(text);
     }
 
-    // fallback: MinerU
-    let mineru_path = find_mineru();
+    // fallback: magic-pdf / MinerU
+    let magic_pdf_path = find_magic_pdf();
 
-    let mineru_path = match mineru_path {
+    let magic_pdf_path = match magic_pdf_path {
         Some(p) => p,
         None => return read_pdf_ocr_fallback(file_path),
     };
@@ -600,25 +683,23 @@ fn read_pdf_scan(file_path: &str) -> Result<String> {
     let temp_dir = tempfile::tempdir()
         .map_err(|e| AppError::Conversion(format!("创建临时目录失败: {}", e)))?;
 
-    let result = Command::new(&mineru_path)
+    let result = Command::new(&magic_pdf_path)
         .args([
             "-p",
             file_path,
             "-o",
             &temp_dir.path().to_string_lossy(),
-            "-l",
-            "ch",
-            "-b",
-            "pipeline",
             "-m",
             "ocr",
+            "-l",
+            "ch",
         ])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .output()
         .map_err(|e| {
             AppError::Conversion(format!(
-                "MinerU 转换失败 (预期 {} 秒内完成): {}\n{}",
+                "magic-pdf 转换失败 (预期 {} 秒内完成): {}\n{}",
                 PDF_CONVERT_TIMEOUT,
                 e,
                 crate::scan::ocr_guidance_for_file(file_path)
@@ -628,7 +709,7 @@ fn read_pdf_scan(file_path: &str) -> Result<String> {
     if !result.status.success() {
         let stderr = String::from_utf8_lossy(&result.stderr);
         return Err(AppError::Conversion(format!(
-            "MinerU 转换失败: {}{}",
+            "magic-pdf 转换失败: {}{}",
             stderr,
             crate::scan::ocr_guidance_for_file(file_path)
         )));
@@ -665,8 +746,9 @@ fn read_pdf_scan(file_path: &str) -> Result<String> {
 ///
 /// 先检查依赖是否可用，不可用则返回清晰的安装指引。
 fn read_pdf_ocr_fallback(file_path: &str) -> Result<String> {
+    let python = python_for_purpose("pytesseract");
     // 检查 pytesseract 是否可用
-    let check = Command::new("python3")
+    let check = Command::new(&python)
         .arg("-c")
         .arg("import pytesseract, pdf2image; print('OK')")
         .output();
@@ -687,7 +769,7 @@ fn read_pdf_ocr_fallback(file_path: &str) -> Result<String> {
     let temp_dir = tempfile::tempdir()
         .map_err(|e| AppError::Conversion(format!("创建临时目录失败: {}", e)))?;
 
-    let output = Command::new("python3")
+    let output = Command::new(&python)
         .arg("-c")
         .arg(
             r###"
@@ -816,7 +898,8 @@ fn split_markdown_by_headings(text: &str) -> String {
 /// 按 TOC 拆分 PDF
 /// 按 TOC 拆分 PDF，返回 (章节标题, 起始页, 结束页) 列表
 pub fn split_pdf_by_toc(file_path: &str) -> Result<Vec<(String, usize, usize)>> {
-    let output = Command::new("python3")
+    let python = python_for_purpose("pymupdf");
+    let output = Command::new(&python)
         .arg("-c")
         .arg(
             r##"
@@ -863,7 +946,8 @@ else:
 /// 保存 PDF 页面范围
 /// 保存 PDF 页面范围到临时文件
 pub fn save_pdf_range(src: &str, dst: &str, start: usize, end: usize) -> Result<()> {
-    let output = Command::new("python3")
+    let python = python_for_purpose("pymupdf");
+    let output = Command::new(&python)
         .arg("-c")
         .arg(
             r##"
@@ -895,7 +979,8 @@ src.close()
 
 /// MarkItDown 统一转换
 fn read_markitdown(file_path: &str) -> Result<String> {
-    let output = Command::new("python3")
+    let python = python_for_purpose("markitdown");
+    let output = Command::new(&python)
         .arg("-c")
         .arg(
             r##"

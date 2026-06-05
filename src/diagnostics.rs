@@ -49,11 +49,11 @@ pub async fn cmd_doctor() -> Result<()> {
         );
     }
 
-    // MinerU（可选）
-    let mineru_ok = check_python_module("mineru").await;
+    // magic-pdf / MinerU（可选）
+    let magic_pdf_ok = check_command("magic-pdf").await || check_command("mineru").await;
     println!(
-        "  MinerU    {}",
-        if mineru_ok {
+        "  magic-pdf {}",
+        if magic_pdf_ok {
             "✅".green()
         } else {
             "⚪ (可选)".dimmed()
