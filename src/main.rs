@@ -248,7 +248,7 @@ async fn handle_scan(
 }
 
 /// 从文件路径和 PDF 元数据解析书名
-fn resolve_book_title(file: &str, is_pdf: bool, summary_title: &str) -> String {
+fn resolve_book_title(file: &str, is_pdf: bool) -> String {
     if is_pdf {
         let meta = extract_pdf_metadata(file);
         if !meta.title.is_empty() {
@@ -258,7 +258,7 @@ fn resolve_book_title(file: &str, is_pdf: bool, summary_title: &str) -> String {
     Path::new(file)
         .file_stem()
         .and_then(|s| s.to_str())
-        .unwrap_or(summary_title)
+        .unwrap_or("未命名")
         .to_string()
 }
 
@@ -404,7 +404,7 @@ async fn handle_compile(cli: Cli) -> cardnote_compiler::error::Result<()> {
         return Ok(());
     }
 
-    let book_title = resolve_book_title(&file, is_pdf, "");
+    let book_title = resolve_book_title(&file, is_pdf);
     // 自动注册到 .cardnote/books.json（如果还不存在）
     cardnote_compiler::config::ensure_book_registered(&book_title);
 
@@ -412,12 +412,9 @@ async fn handle_compile(cli: Cli) -> cardnote_compiler::error::Result<()> {
     let result = pipeline.run(&document, &file, &book_title).await?;
     let compile_duration_ms = compile_start.elapsed().as_millis() as u64;
 
-    // [C3] 编译结果健康检查：如果所有阶段都返回空值，提示用户可能存在失败
-    if result.cards.is_empty()
-        && result.summary.title.is_empty()
-        && result.summary.overview.is_empty()
-    {
-        println!("\n{} 编译结果为空（摘要和卡片均为空）。", "⚠".yellow());
+    // [C3] 编译结果健康检查：如果卡片为空，提示用户可能存在失败
+    if result.cards.is_empty() && result.graph.entities.is_empty() {
+        println!("\n{} 编译结果为空（实体和卡片均为空）。", "⚠".yellow());
         if !result.diagnostics.failures.is_empty() {
             println!(
                 "   检测到 {} 个阶段失败，请检查 compile_diagnostics.md 了解详情。",
@@ -428,10 +425,6 @@ async fn handle_compile(cli: Cli) -> cardnote_compiler::error::Result<()> {
         }
         println!("   输出目录仍会创建，但文件内容可能为空。");
     }
-
-    // 使用 AI 摘要的标题更新（比文件名更准确），同时确保注册到 books.json
-    let book_title = resolve_book_title(&file, is_pdf, &result.summary.title);
-    cardnote_compiler::config::ensure_book_registered(&book_title);
 
     let doc_dir = Path::new("./documents");
     if let Err(e) = tokio::fs::create_dir_all(&doc_dir).await {
@@ -448,10 +441,8 @@ async fn handle_compile(cli: Cli) -> cardnote_compiler::error::Result<()> {
 
     let output_path = if !result.chunks.is_empty() && result.chunks.len() > 1 {
         cardnote_compiler::output::save_book(
-            &result.summary,
             &result.cards,
             &result.graph.entities,
-            &result.graph.relations,
             &cli.output,
             &book_title,
         )

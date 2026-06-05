@@ -756,12 +756,11 @@ mod tests {
 // ═══════════════════════════════════════════════════════
 
 /// Unified 模式单块响应（用于 JSON 反序列化）
+/// 只输出实体和卡片，不生成摘要和关系图谱
 #[derive(Debug, Clone, Deserialize)]
 pub struct UnifiedChunkResponse {
-    pub summary: Summary,
     pub entities: Vec<Entity>,
     pub cards: Vec<UnifiedCard>,
-    pub relations: Vec<Relation>,
 }
 
 /// Unified 模式卡片（字段更宽松，适配 LLM 输出）
@@ -780,10 +779,9 @@ pub struct UnifiedCard {
 
 impl UnifiedChunkResponse {
     /// 将 Unified 响应转换为标准 ChunkResult 组件
-    pub fn into_standard_cards(self, _book_title: &str) -> (Summary, Vec<Entity>, Vec<Card>, Vec<Relation>) {
-        let summary = self.summary;
+    /// 只返回实体和卡片（不生成摘要和关系图谱）
+    pub fn into_standard_cards(self) -> (Vec<Entity>, Vec<Card>) {
         let entities = self.entities;
-        let relations = self.relations;
 
         let cards: Vec<Card> = self.cards.into_iter().map(|uc| {
             let card_type = CardType::parse(&uc.card_type).unwrap_or(CardType::Knowledge);
@@ -809,6 +807,6 @@ impl UnifiedChunkResponse {
             }
         }).collect();
 
-        (summary, entities, cards, relations)
+        (entities, cards)
     }
 }

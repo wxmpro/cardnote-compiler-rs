@@ -9,7 +9,7 @@ use tokio::process::Command;
 use crate::config::TIMESTAMP_FORMAT;
 use crate::error::Result;
 use crate::models::{
-    Card, CardStatus, CompilationDiagnostics, CompilationResult, Entity, Relation, Summary,
+    Card, CardStatus, CompilationDiagnostics, CompilationResult, Entity,
 };
 use crate::quality::QualityReport;
 use crate::scan::ScanResult;
@@ -28,6 +28,7 @@ async fn is_42md_available() -> bool {
 }
 
 /// 可选：使用 42md 的 lint 工具优化排版
+#[allow(dead_code)]
 async fn apply_42md_lint(md_path: &Path) -> Result<()> {
     if !is_42md_available().await {
         return Ok(());
@@ -145,13 +146,6 @@ pub async fn save_single(result: &CompilationResult, output_dir: &str) -> Result
     } else {
         None
     };
-    let title = title.or_else(|| {
-        if !result.summary.title.is_empty() && result.summary.title != "未命名" {
-            Some(result.summary.title.as_str())
-        } else {
-            None
-        }
-    });
     let dir = create_output_dir(output_dir, title).await?;
 
     // 质量门控：过滤被拒绝的卡片
@@ -163,11 +157,6 @@ pub async fn save_single(result: &CompilationResult, output_dir: &str) -> Result
             accepted_cards.len()
         );
     }
-
-    // 保存摘要
-    let summary_path = dir.join("summary.md");
-    fs::write(&summary_path, result.summary.to_markdown()).await?;
-    apply_42md_lint(&summary_path).await.ok();
 
     // 保存卡片(按类型分组) — 只输出通过门控的卡片
     let cards_dir = dir.join("cards");
@@ -189,10 +178,6 @@ pub async fn save_single(result: &CompilationResult, output_dir: &str) -> Result
     // 质量报告包含所有卡片（含被拦截的）
     let quality_path = dir.join("card_quality_report.md");
     fs::write(&quality_path, cards_quality_report(&result.cards)).await?;
-
-    // 保存图谱
-    let graph_path = dir.join("graph.mmd");
-    fs::write(&graph_path, result.graph.to_mermaid()).await?;
 
     // 保存实体列表
     let entities_path = dir.join("entities.md");
@@ -222,19 +207,12 @@ pub async fn save_single(result: &CompilationResult, output_dir: &str) -> Result
 
 /// 保存书籍级编译结果
 pub async fn save_book(
-    global_summary: &Summary,
     all_cards: &[Card],
     all_entities: &[Entity],
-    all_relations: &[Relation],
     output_dir: &str,
     book_title: &str,
 ) -> Result<String> {
     let dir = create_output_dir(output_dir, Some(book_title)).await?;
-
-    // 保存全局摘要
-    let summary_path = dir.join("summary.md");
-    fs::write(&summary_path, global_summary.to_markdown()).await?;
-    apply_42md_lint(&summary_path).await.ok();
 
     // 保存卡片
     let cards_dir = dir.join("cards");
@@ -253,14 +231,6 @@ pub async fn save_book(
     let entities_path = dir.join("entities.md");
     fs::write(&entities_path, entities_to_markdown(all_entities)).await?;
 
-    // 保存关系图谱
-    let graph_path = dir.join("graph.mmd");
-    let graph = crate::models::KnowledgeGraph {
-        entities: all_entities.to_vec(),
-        relations: all_relations.to_vec(),
-    };
-    fs::write(&graph_path, graph.to_mermaid()).await?;
-
     Ok(dir.to_string_lossy().to_string())
 }
 
@@ -268,11 +238,6 @@ pub async fn save_book(
 /// 保存单篇编译结果到指定目录
 pub async fn save_single_to_dir(result: &CompilationResult, output_dir: &Path) -> Result<()> {
     fs::create_dir_all(output_dir).await?;
-
-    // 保存摘要
-    let summary_path = output_dir.join("summary.md");
-    fs::write(&summary_path, result.summary.to_markdown()).await?;
-    apply_42md_lint(&summary_path).await.ok();
 
     // 保存卡片(按类型分组)
     let cards_dir = output_dir.join("cards");
@@ -294,10 +259,6 @@ pub async fn save_single_to_dir(result: &CompilationResult, output_dir: &Path) -
 
     let quality_path = output_dir.join("card_quality_report.md");
     fs::write(&quality_path, cards_quality_report(&result.cards)).await?;
-
-    // 保存图谱
-    let graph_path = output_dir.join("graph.mmd");
-    fs::write(&graph_path, result.graph.to_mermaid()).await?;
 
     // 保存实体列表
     let entities_path = output_dir.join("entities.md");

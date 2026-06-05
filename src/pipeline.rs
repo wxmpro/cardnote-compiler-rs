@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, LazyLock, OnceLock};
+use std::sync::{Arc, LazyLock};
 
 use regex::Regex;
 use serde::{Deserialize, Serialize};
@@ -17,8 +17,8 @@ use crate::models::{
 use crate::stages::cards::{CardPlanner, generate_cards};
 use crate::stages::common::{ChatFn, ChatJsonFn};
 use crate::stages::entities::{extract_entities, unify_entities};
-use crate::stages::graph::{build_graph, merge_relations, update_relation_endpoints};
-use crate::stages::summary::{generate_summary, merge_summaries};
+use crate::stages::graph::build_graph;
+use crate::stages::summary::generate_summary;
 
 // ═══════════════════════════════════════════════════════
 //  共享 FNV-1a 哈希函数
@@ -153,84 +153,6 @@ impl CompileCache {
     }
 }
 
-// ── Stage-level 缓存 ──
-
-/// Stage 缓存：按阶段（summary/entities/cards/graph）缓存编译结果
-///
-/// 缓存 key = FNV-1a(version|provider|stage|doc_hash|prompt_hash|model)
-/// 失效条件：provider/model 改变 / 文档内容改变 / prompt 模板改变
-struct StageCache;
-
-impl StageCache {
-    const CACHE_DIR: &'static str = ".cardc_cache/stages";
-    const VERSION: &'static str = "v2"; // v2: key 包含 provider
-
-    /// FNV-1a 哈希
-    fn fnv1a_hash(data: &str) -> String {
-        fnv1a_hash_str(data)
-    }
-
-    /// 缓存文件路径
-    fn cache_path(stage: &str, key: &str) -> PathBuf {
-        let dir = Path::new(Self::CACHE_DIR);
-        std::fs::create_dir_all(dir).ok();
-        dir.join(format!("{}_{}.json", stage, key))
-    }
-
-    /// 用预计算的文档哈希加载缓存（避免重复哈希文档）
-    fn load_with_hash<T: serde::de::DeserializeOwned>(
-        stage: &str,
-        provider: &str,
-        doc_hash: &str,
-        prompt: &str,
-        model: &str,
-    ) -> Option<T> {
-        let prompt_hash = Self::fnv1a_hash(prompt);
-        let combined = format!(
-            "{}|{}|{}|{}|{}|{}",
-            Self::VERSION,
-            provider,
-            stage,
-            doc_hash,
-            prompt_hash,
-            model
-        );
-        let key = Self::fnv1a_hash(&combined);
-        let path = Self::cache_path(stage, &key);
-        if !path.exists() {
-            return None;
-        }
-        let content = std::fs::read_to_string(&path).ok()?;
-        serde_json::from_str(&content).ok()
-    }
-
-    /// 用预计算的文档哈希保存缓存（仅保存非空结果，避免缓存失败）
-    fn save_with_hash<T: serde::Serialize>(
-        stage: &str,
-        provider: &str,
-        doc_hash: &str,
-        prompt: &str,
-        model: &str,
-        value: &T,
-    ) {
-        let prompt_hash = Self::fnv1a_hash(prompt);
-        let combined = format!(
-            "{}|{}|{}|{}|{}|{}",
-            Self::VERSION,
-            provider,
-            stage,
-            doc_hash,
-            prompt_hash,
-            model
-        );
-        let key = Self::fnv1a_hash(&combined);
-        let path = Self::cache_path(stage, &key);
-        if let Ok(json) = serde_json::to_string_pretty(value) {
-            std::fs::write(&path, json).ok();
-        }
-    }
-}
-
 /// 清理过期缓存文件
 /// 策略：删除超过 30 天未修改的 .json/.cache.json 文件；若总文件数超过 200，额外删除最旧的
 fn cleanup_cache_dir() {
@@ -239,7 +161,7 @@ fn cleanup_cache_dir() {
     let cutoff =
         std::time::SystemTime::now() - std::time::Duration::from_secs(MAX_AGE_DAYS * 86400);
 
-    let dirs = [".cardc_cache", ".cardc_cache/stages"];
+    let dirs = [".cardc_cache"];
     for dir in &dirs {
         let path = Path::new(dir);
         if !path.exists() {
@@ -289,9 +211,6 @@ struct CompileContext {
     prompts: Arc<HashMap<String, String>>,
     #[allow(dead_code)]
     stage_models: Arc<HashMap<String, String>>,
-    stage_cache_enabled: bool,
-    /// 文档哈希缓存，同一文档多次 stage 只算一次 FNV-1a
-    document_hash: Arc<OnceLock<String>>,
 }
 
 impl CompileContext {
@@ -325,45 +244,6 @@ impl CompileContext {
         }
     }
 
-    /// 获取文档哈希（首次计算，后续从缓存返回）
-    fn get_doc_hash(&self, document: &str) -> &str {
-        self.document_hash.get_or_init(|| fnv1a_hash_str(document))
-    }
-
-    /// 尝试加载阶段缓存（使用缓存的文档哈希）
-    fn try_load_stage<T: serde::de::DeserializeOwned>(
-        &self,
-        stage: &str,
-        document: &str,
-        prompt_name: &str,
-    ) -> Option<T> {
-        if !self.stage_cache_enabled {
-            return None;
-        }
-        let doc_hash = self.get_doc_hash(document).to_string();
-        let prompt = self.prompts.get(prompt_name).cloned().unwrap_or_default();
-        let model = self.client.model.clone();
-        let provider = self.client.provider_id().to_string();
-        StageCache::load_with_hash(stage, &provider, &doc_hash, &prompt, &model)
-    }
-
-    /// 保存阶段缓存（使用缓存的文档哈希，仅保存非空成功结果）
-    fn save_stage<T: serde::Serialize>(
-        &self,
-        stage: &str,
-        document: &str,
-        prompt_name: &str,
-        value: &T,
-    ) {
-        if !self.stage_cache_enabled {
-            return;
-        }
-        let doc_hash = self.get_doc_hash(document).to_string();
-        let prompt = self.prompts.get(prompt_name).cloned().unwrap_or_default();
-        let model = self.client.model.clone();
-        let provider = self.client.provider_id().to_string();
-        StageCache::save_with_hash(stage, &provider, &doc_hash, &prompt, &model, value);
-    }
 }
 
 impl ChatFn for CompileContext {
@@ -438,11 +318,6 @@ impl Pipeline {
             }
         }
 
-        // Stage 缓存：默认启用，可通过环境变量关闭
-        let stage_cache_enabled = std::env::var("CARDC_DISABLE_STAGE_CACHE")
-            .map(|v| v != "1" && v != "true")
-            .unwrap_or(true);
-
         // 异步启动缓存清理，不阻塞 Pipeline 初始化
         tokio::spawn(async move {
             cleanup_cache_dir();
@@ -453,8 +328,6 @@ impl Pipeline {
                 client: Arc::new(client),
                 prompts: Arc::new(prompts),
                 stage_models: Arc::new(stage_model_map),
-                stage_cache_enabled,
-                document_hash: Arc::new(OnceLock::new()),
             },
         }
     }
@@ -573,10 +446,9 @@ impl Pipeline {
         println!("\n{}", "=".repeat(60));
         println!("编译完成！");
         println!(
-            "  实体: {} 个  |  卡片: {} 张  |  关系: {} 条",
+            "  实体: {} 个  |  卡片: {} 张",
             result.entities.len(),
-            result.cards.len(),
-            result.relations.len()
+            result.cards.len()
         );
         if !diagnostics.failures.is_empty() {
             println!(
@@ -769,7 +641,7 @@ impl Pipeline {
         }
 
         // 3. Reduce
-        println!("\n[3/4] Reduce 阶段 — 合并去重...");
+        println!("\n[3/3] Reduce 阶段 — 合并去重...");
 
         // 先生成 ChunkInfo（在 move 数据之前）
         let chunk_infos: Vec<ChunkInfo> = chunk_results
@@ -779,7 +651,7 @@ impl Pipeline {
                 size: c.document.chars().count(),
                 entities: c.entities.len(),
                 cards: c.cards.len(),
-                relations: c.relations.len(),
+                relations: 0,
             })
             .collect();
 
@@ -795,19 +667,13 @@ impl Pipeline {
 
         let mut all_entities = Vec::new();
         let mut all_cards = Vec::new();
-        let mut all_relations = Vec::new();
-        let mut all_summaries = Vec::new();
 
         for r in &mut chunk_results {
             all_entities.append(&mut r.entities);
             all_cards.append(&mut r.cards);
-            all_relations.append(&mut r.relations);
-            if !r.summary.title.is_empty() || !r.summary.overview.is_empty() {
-                all_summaries.push(std::mem::take(&mut r.summary));
-            }
         }
 
-        let (unique_entities, entity_stats, entity_name_map) = unify_entities(&all_entities);
+        let (unique_entities, entity_stats, _entity_name_map) = unify_entities(&all_entities);
         if entity_stats.merged_groups > 0 {
             eprintln!(
                 "  ✓ 实体统一: {} 个实体 → {} 个 (合并 {} 组, 消除 {} 个重复)",
@@ -818,56 +684,35 @@ impl Pipeline {
             );
         }
         let unique_cards = dedup_cards(&all_cards);
-        let updated_relations = update_relation_endpoints(&all_relations, &entity_name_map);
-        let unique_relations = merge_relations(&updated_relations);
 
         println!(
-            "  合并后: 实体 {} 个 | 卡片 {} 张 | 关系 {} 条",
+            "  合并后: 实体 {} 个 | 卡片 {} 张",
             unique_entities.len(),
-            unique_cards.len(),
-            unique_relations.len()
+            unique_cards.len()
         );
-
-        // 4. 全局摘要
-        println!("\n[4/4] 生成全局摘要...");
-        let ctx = &self.ctx;
-        let global_summary =
-            match merge_summaries(&all_summaries, document, ctx, &|name| ctx.load_prompt(name))
-                .await
-            {
-                Ok(s) => {
-                    println!("  ✓ 全局摘要完成");
-                    s
-                }
-                Err(_) => {
-                    println!("  ⚠ 全局摘要生成失败，使用本地合并");
-                    Pipeline::merge_doc_summaries(&all_summaries)
-                }
-            };
 
         println!("\n{}", "=".repeat(60));
         println!("分块编译完成！");
         println!("  分块数: {}", chunk_results.len());
         println!(
-            "  实体: {} 个  |  卡片: {} 张  |  关系: {} 条",
+            "  实体: {} 个  |  卡片: {} 张",
             unique_entities.len(),
-            unique_cards.len(),
-            unique_relations.len()
+            unique_cards.len()
         );
         println!("{}", "=".repeat(60));
 
         // 输出 LLM 用量报告并清理内存
-        let report = ctx.client.usage_report().await;
+        let report = self.ctx.client.usage_report().await;
         println!("\n{}", report);
-        ctx.client.clear_usage().await;
+        self.ctx.client.clear_usage().await;
 
         Ok(CompilationResult {
             source_file: source_file.to_string(),
-            summary: global_summary,
+            summary: Summary::default(),
             cards: unique_cards,
             graph: KnowledgeGraph {
                 entities: unique_entities,
-                relations: unique_relations,
+                relations: Vec::new(),
             },
             chunks: chunk_infos,
             diagnostics: CompilationDiagnostics {
@@ -945,49 +790,6 @@ impl Pipeline {
         chunks
     }
 
-    // ── 工具方法 ──
-
-    fn merge_doc_summaries(summaries: &[Summary]) -> Summary {
-        if summaries.is_empty() {
-            return Summary::default();
-        }
-
-        let all_points: Vec<String> = summaries
-            .iter()
-            .flat_map(|s| s.key_points.clone())
-            .take(20)
-            .collect();
-
-        Summary {
-            title: summaries
-                .first()
-                .map(|s| s.title.clone())
-                .unwrap_or_default(),
-            overview: summaries
-                .iter()
-                .filter_map(|s| {
-                    if s.overview.is_empty() {
-                        None
-                    } else {
-                        Some(s.overview.clone())
-                    }
-                })
-                .collect::<Vec<_>>()
-                .join("\n\n"),
-            key_points: all_points,
-            structure: summaries
-                .iter()
-                .filter_map(|s| {
-                    if s.structure.is_empty() {
-                        None
-                    } else {
-                        Some(s.structure.clone())
-                    }
-                })
-                .collect::<Vec<_>>()
-                .join("\n"),
-        }
-    }
 }
 
 /// 辅助函数：带重试的执行（3次重试 + 指数退避）
@@ -1077,15 +879,15 @@ async fn compile_chunk_unified(
             ))
         })?;
 
-    let (summary, entities, cards, relations) = unified.into_standard_cards(&book_title);
+    let (entities, cards) = unified.into_standard_cards();
 
     Ok(ChunkResult {
         document: document.clone(),
         title_path,
-        summary,
+        summary: Summary::default(),
         entities,
         cards,
-        relations,
+        relations: Vec::new(),
     })
 }
 
