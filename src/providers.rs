@@ -149,6 +149,14 @@ impl ProviderRegistry {
             .unwrap_or(false)
     }
 
+    /// 查找指定提供商和模型的上下文长度
+    pub fn find_model_context_length(&self, provider_id: &str, model_id: &str) -> Option<usize> {
+        self.providers
+            .get(provider_id)
+            .and_then(|p| p.find_model(model_id))
+            .map(|m| m.context_length)
+    }
+
     fn register(&mut self, provider: Provider) {
         self.providers.insert(provider.id.clone(), provider);
     }

@@ -2,7 +2,7 @@
 
 把文档编译成结构化知识卡片。支持单文件处理，内置 12 种卡片类型。
 
-**当前版本**：v0.1.49
+**当前版本**：v0.1.56
 
 ## 快速开始
 
@@ -17,21 +17,19 @@ cardc init
 # 编译一本书
 cardc ./book.pdf
 
-# 仅生成摘要
-cardc summary ./book.pdf
-
-# 仅生成卡片
+# 仅生成卡片（跳过实体提取）
 cardc cards ./book.pdf
 ```
 
 ## 核心特性
 
-- **Extract-Then-Assign**：短文档自动使用 2 次 LLM 调用（vs 传统 9 次），API 成本降 60%，失败时自动回退
+- **Unified 编译**：一次 LLM 请求同时生成实体 + 卡片（vs 传统 4 次请求），API 成本降 70%
 - **12 种卡片类型**：术语卡、新知卡、反常识卡、金句卡、人物卡、事件卡、行动卡、图示卡、新词卡、综述卡、基础卡、索引卡
-- **智能分块**：长文档自动触发 Map-Reduce 语义分块编译，块间保留上下文重叠
+- **智能分块**：根据模型上下文窗口自动计算分块阈值，支持 64K~1M tokens 的任意模型
+- **动态卡片规划**：根据文档长度自动调整卡片数量（42万字书籍 → 80-160 张），不再受限于固定 10-20 张
 - **质量门控**：自动检测标题与内容不匹配、ref 格式违规、LLM 编造例子、类型混淆等问题，拦截不输出
 - **自动 Provider 选择**：启动时自动检测所有配置 Provider 的连通性，选择最优可用者
-- **编译缓存**：Stage 级缓存 + 文档哈希缓存，断点续编译
+- **编译缓存**：文档哈希缓存，断点续编译
 - **编译历史追踪**：SQLite 持久化每次编译记录，支持 `history` / `review` 命令查看与审阅
 - **RPM 限流**：`CARDNOTE_MAX_RPM` 环境变量控制 API 调用频率
 - **多格式输入**：PDF（文字层/扫描版 OCR）、Word、EPUB、Markdown、HTML 等
@@ -43,10 +41,7 @@ cardc cards ./book.pdf
 |------|------|
 | `cardc <文件>` | 完整编译（自动选择策略） |
 | `cardc init` | 交互式配置 API（首次运行必需） |
-| `cardc summary <文件>` | 仅运行 AI 摘要 |
-| `cardc annotate <文件>` | 仅运行 AI 实体标注 |
 | `cardc cards <文件>` | 仅生成卡片 |
-| `cardc graph <文件>` | 仅生成关系图谱 |
 | `cardc scan <目录>` | PDF 预扫描（检测 OCR 需求） |
 | `cardc quality <文件>` | 输入质量检测（不调用 LLM） |
 | `cardc history` | 查看编译历史记录 |
@@ -83,7 +78,7 @@ uv pip install paddlepaddle paddleocr
 
 ## 配置
 
-### 推荐方式：`~/.config/cardnote/providers.json`
+### 推荐方式：`.cardnote/providers.json`
 
 首次运行 `cardc init` 时，工具会自动导出内置 Provider 配置到 `~/.config/cardnote/providers.default.json`。用户只需创建 `providers.json` 写入需覆盖的 Provider：
 
@@ -92,7 +87,7 @@ uv pip install paddlepaddle paddleocr
   "deepseek": {
     "api_key": "sk-your-key-here",
     "base_url": "https://api.deepseek.com/v1",
-    "model": "deepseek-chat"
+    "model": "deepseek-v4-pro"
   }
 }
 ```
@@ -104,11 +99,7 @@ uv pip install paddlepaddle paddleocr
 ```bash
 LLM_API_KEY=sk-your-key
 LLM_PROVIDER=deepseek
-LLM_MODEL=deepseek-chat
-
-# 阶段级模型分配（可选）
-LLM_MODEL_SUMMARY=kimi-2.6
-LLM_MODEL_CARDS=deepseek-chat
+LLM_MODEL=deepseek-v4-pro
 
 # RPM 限流（可选，默认 30）
 CARDNOTE_MAX_RPM=30
@@ -144,19 +135,47 @@ CARDNOTE_MAX_WORKERS=4
   ↓
 [质量检测] → 过低？→ 中止（或 --force）
   ↓
-[策略选择]
-  ├── ≤200K 字符 → Extract-Then-Assign（2 次调用）
-  │   └── 失败/产出不足 → 自动回退分类型策略（多次调用）
-  └── >200K 字符 → Map-Reduce 语义分块编译
+[策略选择] ← 根据模型上下文长度自动计算分块阈值
+  ├── 短文档 → Unified 单次编译（1 次调用）
+  └── 长文档 → Map-Reduce 语义分块编译
   ↓
-[流水线执行] → 摘要 → 实体 → 卡片 → 图谱
+[流水线执行] → 实体提取 + 卡片生成
   ↓
 [质量门控] → reject_reason 非空或 status≠Accepted 的卡片不输出
   ↓
-[输出] → Markdown 卡片 + 知识图谱 + 质量报告
+[输出] → Markdown 卡片 + 实体列表 + 质量报告
   ↓
 [记录持久化] → SQLite 编译历史
 ```
+
+### 分块策略
+
+分块阈值根据模型上下文窗口**动态计算**：
+
+```
+可用字符数 = (context_length - prompt_tokens - output_tokens - safety_margin) × 0.5
+```
+
+| 模型上下文 | 分块阈值 | 适用场景 |
+|-----------|---------|---------|
+| 1M tokens | ~48万字符 | 大部头书籍（如《人生模式》42万字 → 1 块） |
+| 200K tokens | ~8万字符 | 中等长度文档 |
+| 128K tokens | ~5万字符 | 标准长文 |
+| 64K tokens | ~2万字符 | 短文档/轻量模型 |
+
+### 卡片数量规划
+
+卡片数量**根据文档长度动态调整**，不再固定 10-20 张：
+
+| 文档长度 | 卡片数量 |
+|---------|---------|
+| ≤5万字 | 10-20 张 |
+| 5-20万字 | 20-50 张 |
+| 20-50万字 | 50-100 张 |
+| 50-100万字 | 100-200 张 |
+| >100万字 | 每 5000-10000 字 1 张 |
+
+示例：《人生模式》42万字 → 预计 80-160 张卡片（分 1 块编译）。
 
 ## 项目结构
 
@@ -164,11 +183,11 @@ CARDNOTE_MAX_WORKERS=4
 src/
 ├── main.rs          # CLI 入口（clap）
 ├── lib.rs           # 库模块声明
-├── pipeline.rs      # 编译流水线 + Stage 缓存 + 重试逻辑
+├── pipeline.rs      # 编译流水线 + 动态分块 + 重试逻辑
 ├── api.rs           # LLM 客户端 + JSON 降级 + 用量统计
 ├── converter.rs     # 文档 → Markdown（多层 fallback）
-├── models.rs        # 数据模型（Card / Summary / Entity / Relation）
-├── config.rs        # 配置管理（Provider / 书籍列表 / 限流）
+├── models.rs        # 数据模型（Card / Entity）
+├── config.rs        # 配置管理（Provider / 书籍列表 / 限流 / 动态分块）
 ├── providers.rs     # LLM 提供商注册表
 ├── health.rs        # Provider 健康检测与自动选择
 ├── rate_limiter.rs  # Token-bucket 限流器
@@ -180,10 +199,10 @@ src/
 ├── doc_type.rs      # 文档类型检测
 ├── output.rs        # 结果输出 + 质量报告
 ├── stages/
-│   ├── cards.rs     # 卡片生成（Extract-Then-Assign + fallback）
-│   ├── entities.rs  # 实体提取
-│   ├── graph.rs     # 关系图谱
-│   ├── summary.rs   # 摘要生成
+│   ├── cards.rs     # 卡片生成（旧模式，保留兼容）
+│   ├── entities.rs  # 实体提取（旧模式，保留兼容）
+│   ├── graph.rs     # 关系图谱（旧模式，保留兼容）
+│   ├── summary.rs   # 摘要生成（旧模式，保留兼容）
 │   └── common.rs    # 阶段共享逻辑
 └── quality/
     ├── card_lint.rs     # 卡片 Lint（ref 格式 / 自动修复）
@@ -200,11 +219,9 @@ output/              # 默认输出目录
 
 ```
 output/{日期}_{书名}/
-├── README.md                 # 总览（摘要 + 卡片列表）
+├── README.md                 # 总览（卡片列表）
 ├── all_cards.md              # 全部卡片合并
-├── summary.md                # AI 摘要
 ├── entities.md               # 实体列表
-├── graph.mmd                 # Mermaid 关系图谱
 ├── card_quality_report.md    # 卡片质量报告
 ├── input_quality_report.md   # 输入质量报告
 ├── compile_diagnostics.md    # 编译诊断（如有失败）
@@ -237,4 +254,9 @@ output/{日期}_{书名}/
 - 检查 API Key 余额与连通性：`cardc doctor`
 - 检查输入质量：`cardc quality ./文件.pdf`
 - 查看诊断文件：`output/.../compile_diagnostics.md`
+
+**卡片数量太少**：
+- 检查模型上下文长度：`cardc doctor` 会显示当前模型信息
+- 小上下文模型（64K/128K）会自动分块，每块独立生成卡片
+- 使用大上下文模型（1M tokens）可避免分块，一次性处理整本书
 

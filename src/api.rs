@@ -69,6 +69,12 @@ impl LlmClient {
         &self.provider_id
     }
 
+    /// 获取当前模型的上下文长度（tokens）
+    pub fn context_length(&self) -> Option<usize> {
+        let registry = crate::providers::ProviderRegistry::new();
+        registry.find_model_context_length(&self.provider_id, &self.current_model())
+    }
+
     /// 获取当前实际使用的模型 ID
     fn current_model(&self) -> String {
         let idx = self.current_model_idx.load(Ordering::Relaxed);

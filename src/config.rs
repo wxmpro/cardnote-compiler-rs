@@ -14,9 +14,29 @@ use crate::providers::{
 //  分块配置
 // ═══════════════════════════════════════════════════════
 
-/// 单块最大字符数，超过则启用 Map-Reduce
-/// Deepseek V4 上下文 1M tokens，约可承载 50-60 万中文字符（含 prompt 开销）
-pub const CHUNK_SIZE: usize = 500000;
+/// 根据模型上下文长度计算单块最大字符数
+///
+/// 计算逻辑：
+/// - prompt 模板约 4000 tokens
+/// - 输出（JSON 卡片+实体）约 16000 tokens
+/// - 留给文档的 tokens = context_length - prompt - output - safety_margin
+/// - 中文字符 ≈ tokens * 0.5（保守估计）
+pub fn chunk_size_for_context(context_length: usize) -> usize {
+    let prompt_tokens = 4000;
+    let output_tokens = 16000;
+    let safety_margin = 2000;
+
+    let available_tokens = context_length
+        .saturating_sub(prompt_tokens + output_tokens + safety_margin);
+
+    let chars = (available_tokens as f64 * 0.5) as usize;
+
+    // 最小 10000 字符，最大 500000 字符
+    chars.clamp(10000, 500_000)
+}
+
+/// 向后兼容：默认 CHUNK_SIZE（基于 200K 上下文模型）
+pub const DEFAULT_CHUNK_SIZE: usize = 80_000;
 
 // ═══════════════════════════════════════════════════════
 //  LLM 调用配置

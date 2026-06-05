@@ -7,7 +7,6 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::Semaphore;
 
 use crate::api::LlmClient;
-use crate::config::CHUNK_SIZE;
 use crate::doc_type::{DocTypeDetector, DocumentType};
 use crate::error::{AppError, Result};
 use crate::models::{
@@ -211,6 +210,8 @@ struct CompileContext {
     prompts: Arc<HashMap<String, String>>,
     #[allow(dead_code)]
     stage_models: Arc<HashMap<String, String>>,
+    /// 根据模型上下文动态计算的单块最大字符数
+    chunk_size: usize,
 }
 
 impl CompileContext {
@@ -323,11 +324,17 @@ impl Pipeline {
             cleanup_cache_dir();
         });
 
+        // 根据模型上下文长度动态计算分块大小
+        let ctx_len = client.context_length().unwrap_or(200_000);
+        let chunk_size = crate::config::chunk_size_for_context(ctx_len);
+        println!("  模型上下文: {} tokens → 单块上限: {} 字符", ctx_len, chunk_size);
+
         Self {
             ctx: CompileContext {
                 client: Arc::new(client),
                 prompts: Arc::new(prompts),
                 stage_models: Arc::new(stage_model_map),
+                chunk_size,
             },
         }
     }
@@ -349,8 +356,8 @@ impl Pipeline {
         let plan_summary = CardPlanner::summary(doc_detection.doc_type, doc_char_count);
         println!("  卡片规划: {}", plan_summary);
 
-        // [H3] 按字符数判断是否需要分块，与 CHUNK_SIZE 的语义（字符数）保持一致
-        if document.chars().count() <= CHUNK_SIZE {
+        // [H3] 按字符数判断是否需要分块
+        if document.chars().count() <= self.ctx.chunk_size {
             self.run_single(document, source_file, doc_detection.doc_type, book_title)
                 .await
         } else {
@@ -485,7 +492,7 @@ impl Pipeline {
         doc_type: DocumentType,
         book_title: &str,
     ) -> Result<CompilationResult> {
-        println!("\n[模式] 分块 Map-Reduce 编译（阈值: {} 字符）", CHUNK_SIZE);
+        println!("\n[模式] 分块 Map-Reduce 编译（阈值: {} 字符）", self.ctx.chunk_size);
         println!("{}", "-".repeat(60));
 
         // 1. Split
@@ -747,7 +754,7 @@ impl Pipeline {
                 let level = caps[1].len();
                 let title = caps[2].trim().to_string();
 
-                if current_size >= CHUNK_SIZE - 5000 {
+                if current_size >= self.ctx.chunk_size - 5000 {
                     let overlap = extract_overlap(&current_doc, &title_stack);
                     flush_chunk(&mut chunks, &current_doc, &title_stack);
                     current_doc = overlap;
@@ -769,7 +776,7 @@ impl Pipeline {
             current_doc.push('\n');
             current_size += line.len() + 1;
 
-            if current_size >= CHUNK_SIZE {
+            if current_size >= self.ctx.chunk_size {
                 let overlap = extract_overlap(&current_doc, &title_stack);
                 flush_chunk(&mut chunks, &current_doc, &title_stack);
                 current_doc = overlap;
@@ -845,9 +852,22 @@ async fn compile_chunk_unified(
 
     // 加载 unified prompt
     let prompt_template = ctx_ref.load_prompt("unified")?;
-    let prompt = prompt_template.replace("{document}", &document);
 
-    let system = "你是一位资深的内容分析师、知识策展人和知识图谱专家。你的核心能力是从复杂文本中同时完成：结构化摘要提取、实体识别、知识卡片生成和关系图谱构建。所有输出必须严格基于原文，不添加原文没有的信息。".to_string();
+    // 根据文档长度计算卡片数量建议
+    let doc_chars = document.chars().count();
+    let card_count_hint = match doc_chars {
+        0..=50_000 => "10-20张".to_string(),
+        50_001..=200_000 => "20-50张".to_string(),
+        200_001..=500_000 => "50-100张".to_string(),
+        500_001..=1_000_000 => "100-200张".to_string(),
+        _ => format!("{}-{}张", doc_chars / 10_000, doc_chars / 5_000),
+    };
+
+    let prompt = prompt_template
+        .replace("{document}", &document)
+        .replace("{card_count_hint}", &card_count_hint);
+
+    let system = "你是一位以认知边界爆破与知识最小信息单位为双重信仰的知识炼金术士。你的核心身份是认知牢笼的越狱者、溯源者、连接者和行为改变的系统设计师。所有输出必须严格基于原文，不添加原文没有的信息。".to_string();
 
     // 调用 JSON mode
     let response = ctx_ref
