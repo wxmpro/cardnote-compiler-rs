@@ -273,9 +273,6 @@ async fn handle_compile(cli: Cli) -> cardnote_compiler::error::Result<()> {
     );
     println!();
 
-    let client_for_usage = client.clone();
-    let pipeline = Pipeline::new(client);
-
     let path = Path::new(&file);
     let is_pdf = path
         .extension()
@@ -356,6 +353,20 @@ async fn handle_compile(cli: Cli) -> cardnote_compiler::error::Result<()> {
     // 自动注册到 .cardnote/books.json（如果还不存在）
     cardnote_compiler::config::ensure_book_registered(&book_title);
 
+    // 创建带 timestamp 的输出目录，传给 Pipeline 用于实时写入每块结果
+    let client_for_usage = client.clone();
+    let timestamp = Local::now().format("%Y%m%d%H%M%S").to_string();
+    let file_stem = Path::new(&file)
+        .file_stem()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .to_string();
+    let file_stem = cardnote_compiler::output::sanitize_filename(&file_stem);
+    let out_dir_name = format!("{}_{}", timestamp, file_stem);
+    let output_dir = std::path::PathBuf::from(&cli.output).join(&out_dir_name);
+    std::fs::create_dir_all(&output_dir)?;
+    let pipeline = Pipeline::new(client, Some(output_dir.clone()));
+
     let compile_start = std::time::Instant::now();
     let result = pipeline.run(&document, &file, &book_title).await?;
     let compile_duration_ms = compile_start.elapsed().as_millis() as u64;
@@ -387,16 +398,17 @@ async fn handle_compile(cli: Cli) -> cardnote_compiler::error::Result<()> {
         }
     }
 
+    let out_dir_str = output_dir.to_string_lossy().to_string();
     let output_path = if !result.chunks.is_empty() && result.chunks.len() > 1 {
         cardnote_compiler::output::save_book(
             &result.cards,
             &result.graph.entities,
-            &cli.output,
+            &out_dir_str,
             &book_title,
         )
         .await?
     } else {
-        cardnote_compiler::output::save_single(&result, &cli.output).await?
+        cardnote_compiler::output::save_single(&result, &out_dir_str).await?
     };
     println!("\n结果已保存到: {}", output_path);
 

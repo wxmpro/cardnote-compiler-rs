@@ -305,81 +305,6 @@ fn test_extract_overlap_preserves_utf8_boundaries() {
 }
 
 // ═══════════════════════════════════════════════════════
-//  Merge Doc Summaries 测试
-// ═══════════════════════════════════════════════════════
-
-#[test]
-fn test_merge_doc_summaries_empty_input() {
-    // merge_doc_summaries 是 pub(crate)，通过 pipeline 内部单元测试验证。
-    // 这里验证 merge_summaries 的异步入口行为已在 integration_stages.rs 中覆盖。
-    // 补充：验证 summaries 列表为空时的行为已由 test_merge_summaries_empty 覆盖。
-}
-
-#[test]
-fn test_summary_key_points_truncation_boundary() {
-    // 验证 merge_doc_summaries 的 take(20) 行为
-    // 构造超过 20 个要点的场景（15 docs × 2 = 30 key_points → take(20) = 20）
-    let _summaries: Vec<_> = (0..15)
-        .map(|i| cardnote_compiler::models::Summary {
-            title: format!("文档{}", i),
-            overview: String::new(),
-            key_points: vec!["要点".to_string(); 2],
-            structure: String::new(),
-        })
-        .collect();
-    // take(20) 行为已在 pipeline::tests::test_merge_doc_summaries_points_limit 中验证
-}
-
-// ═══════════════════════════════════════════════════════
-//  实体统一 → 关系更新 链式测试
-// ═══════════════════════════════════════════════════════
-
-#[test]
-fn test_entity_unification_updates_graph_relations() {
-    use cardnote_compiler::stages::entities::unify_entities;
-    use cardnote_compiler::stages::graph::{merge_relations, update_relation_endpoints};
-
-    // 1. 创建含变体的实体列表
-    let entities = vec![
-        cardnote_compiler::models::Entity {
-            name: "认知心理学（Cognitive Psychology）".to_string(),
-            entity_type: "学科".to_string(),
-            context: "研究人类认知过程".to_string(),
-        },
-        cardnote_compiler::models::Entity {
-            name: "认知心理学".to_string(),
-            entity_type: "学科".to_string(),
-            context: "心理学分支".to_string(),
-        },
-        cardnote_compiler::models::Entity {
-            name: "行为主义".to_string(),
-            entity_type: "学派".to_string(),
-            context: String::new(),
-        },
-    ];
-
-    // 2. 统一实体
-    let (unified, _stats, name_map) = unify_entities(&entities);
-    assert_eq!(unified.len(), 2, "两个认知心理学变体应被合并");
-
-    // 3. 创建使用旧名称的关系
-    let relations = vec![
-        make_test_relation("认知心理学（Cognitive Psychology）", "行为主义", "对立于"),
-        make_test_relation("认知心理学", "行为主义", "对立于"),
-    ];
-
-    // 4. 更新端点
-    let updated = update_relation_endpoints(&relations, &name_map);
-
-    // 5. 合并重复
-    let merged = merge_relations(&updated);
-
-    // 最终应只有一条"认知心理学（统一名）→ 行为主义"的关系
-    assert_eq!(merged.len(), 1, "更新端点后两条重复关系应合并为一条");
-    assert_eq!(merged[0].target, "行为主义");
-}
-
-// ═══════════════════════════════════════════════════════
 //  CompileCache 路径安全性测试
 // ═══════════════════════════════════════════════════════
 
@@ -421,28 +346,6 @@ fn failing_load_prompt(name: &str) -> cardnote_compiler::error::Result<String> {
     Err(cardnote_compiler::error::AppError::PromptLoad(
         format!("模拟的 prompt 加载失败: {}", name),
     ))
-}
-
-#[tokio::test]
-async fn test_summary_with_prompt_load_failure() {
-    use cardnote_compiler::stages::summary::generate_summary;
-    use common::MockChat;
-
-    let mock = MockChat::new(common::mock_summary_response());
-    let result = generate_summary(common::TEST_DOCUMENT, &mock, &failing_load_prompt).await;
-
-    // prompt 加载失败应导致 generate_summary 返回 Err
-    assert!(
-        result.is_err(),
-        "prompt 加载失败应导致摘要生成失败"
-    );
-    let err = result.unwrap_err();
-    let err_msg = format!("{}", err);
-    assert!(
-        err_msg.contains("模拟的 prompt 加载失败"),
-        "错误消息应包含原因: {}",
-        err_msg
-    );
 }
 
 #[tokio::test]

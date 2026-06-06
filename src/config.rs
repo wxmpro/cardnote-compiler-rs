@@ -14,26 +14,38 @@ use crate::providers::{
 //  分块配置
 // ═══════════════════════════════════════════════════════
 
-/// 根据模型上下文长度计算单块最大字符数
+/// 根据模型上下文长度与最大输出 tokens 计算单块最大字符数
 ///
-/// 计算逻辑：
-/// - prompt 模板约 4000 tokens，但 80% 命中缓存（系统提示复用），实际只消耗 800 新 tokens
-/// - 输出（JSON 卡片+实体）约 16000 tokens
-/// - 中文字符平均 1.3 tokens/字符（DeepSeek/Kimi/GLM 中文 tokenizer）
-/// - 1 token ≈ 0.77 字符（而非之前的保守 0.5）
-pub fn chunk_size_for_context(context_length: usize) -> usize {
+/// 核心约束：输出 tokens 是硬瓶颈。输入上下文再大，如果输出只有 8K tokens，
+/// 单块也产不出几张卡片。chunk_size 应由输入容量和输出容量共同决定，取较小值。
+///
+/// 估算依据（基于实测 JSON mode 响应）：
+/// - 每张完整 JSON 卡片（含 title/content/evidence/reference/original_text）≈ 600-800 tokens
+/// - 产 1 张高质量卡片约需 3000-5000 字符原始素材（中高密度文本）
+/// - 保守取 700 tokens/卡、4000 字符素材/卡
+pub fn chunk_size_for_context(context_length: usize, max_output_tokens: usize) -> usize {
     let effective_prompt_tokens = 800; // 4000 * 20%，缓存命中 80%
-    let output_tokens = 16000;
     let safety_margin = 2000;
     let tokens_per_char: f64 = 1.3;
 
-    let available_tokens = context_length
-        .saturating_sub(effective_prompt_tokens + output_tokens + safety_margin);
+    // 1. 输入容量：能塞进上下文的最大字符数
+    // 不预先减去 max_output_tokens，输入和输出共享上下文窗口
+    let input_available = context_length
+        .saturating_sub(effective_prompt_tokens + safety_margin);
+    let input_based_chars = (input_available as f64 / tokens_per_char) as usize;
 
-    let chars = (available_tokens as f64 / tokens_per_char) as usize;
+    // 2. 输出容量：max_output_tokens 能产多少张卡，对应多少字符素材
+    // 每张 JSON 卡片 ≈ 700 tokens（保守），每卡需 ≈ 4000 字符素材
+    let tokens_per_card: f64 = 700.0;
+    let chars_per_card_source: f64 = 4000.0;
+    let max_cards = (max_output_tokens as f64 / tokens_per_card).max(1.0);
+    let output_based_chars = (max_cards * chars_per_card_source) as usize;
 
-    // 最小 10000 字符，最大 500000 字符
-    chars.clamp(10000, 500_000)
+    // 取较小值，确保输入不浪费、输出不 truncation
+    let chars = input_based_chars.min(output_based_chars);
+
+    // 最小 10K（避免过度分块），最大 500K（避免 OOM）
+    chars.clamp(10_000, 500_000)
 }
 
 /// 向后兼容：默认 CHUNK_SIZE（基于 200K 上下文模型）

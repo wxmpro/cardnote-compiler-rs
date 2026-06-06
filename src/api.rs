@@ -75,6 +75,12 @@ impl LlmClient {
         registry.find_model_context_length(&self.provider_id, &self.current_model())
     }
 
+    /// 获取当前模型的最大输出 tokens
+    pub fn max_output_tokens(&self) -> Option<usize> {
+        let registry = crate::providers::ProviderRegistry::new();
+        registry.find_model_max_output_tokens(&self.provider_id, &self.current_model())
+    }
+
     /// 获取当前实际使用的模型 ID
     fn current_model(&self) -> String {
         let idx = self.current_model_idx.load(Ordering::Relaxed);

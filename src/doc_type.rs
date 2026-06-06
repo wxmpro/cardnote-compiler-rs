@@ -34,35 +34,35 @@ impl DocumentType {
         match self {
             DocumentType::Book => CompileConfig {
                 chunk_size: 50000,
-                max_cards_per_chunk: 15,
+                max_cards_per_chunk: 30,
                 expect_chapters: true,
                 expect_entities: true,
                 expect_cross_refs: true,
             },
             DocumentType::Paper => CompileConfig {
                 chunk_size: 30000,
-                max_cards_per_chunk: 12,
+                max_cards_per_chunk: 25,
                 expect_chapters: false,
                 expect_entities: true,
                 expect_cross_refs: true,
             },
             DocumentType::Article => CompileConfig {
                 chunk_size: 15000,
-                max_cards_per_chunk: 8,
+                max_cards_per_chunk: 15,
                 expect_chapters: false,
                 expect_entities: false,
                 expect_cross_refs: false,
             },
             DocumentType::Report => CompileConfig {
                 chunk_size: 40000,
-                max_cards_per_chunk: 10,
+                max_cards_per_chunk: 25,
                 expect_chapters: true,
                 expect_entities: true,
                 expect_cross_refs: false,
             },
             DocumentType::Manual => CompileConfig {
                 chunk_size: 35000,
-                max_cards_per_chunk: 10,
+                max_cards_per_chunk: 20,
                 expect_chapters: true,
                 expect_entities: false,
                 expect_cross_refs: false,
@@ -135,7 +135,7 @@ impl Default for CompileConfig {
     fn default() -> Self {
         Self {
             chunk_size: 50000,
-            max_cards_per_chunk: 12,
+            max_cards_per_chunk: 25,
             expect_chapters: true,
             expect_entities: true,
             expect_cross_refs: false,

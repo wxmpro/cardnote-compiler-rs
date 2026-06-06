@@ -30,11 +30,9 @@ async fn test_save_creates_all_required_files() {
 
     let output_dir = std::path::Path::new(&output_path);
 
-    // 验证所有必需文件
+    // 验证所有必需文件（Unified 模式产物，无 summary.md / graph.mmd）
     let required_files = [
-        "summary.md",
         "all_cards.md",
-        "graph.mmd",
         "entities.md",
         "card_quality_report.md",
     ];
@@ -179,25 +177,17 @@ async fn test_save_summary_with_full_structure() {
 // ═══════════════════════════════════════════════════════
 
 #[tokio::test]
-async fn test_output_dir_conflict_resolution() {
+async fn test_output_dir_save_to_existing_dir() {
     let temp_dir = tempfile::tempdir().unwrap();
     let base = temp_dir.path().to_string_lossy().to_string();
 
-    // 第一次保存
-    let result1 = make_test_compilation_result();
-    let path1 = save_single(&result1, &base).await.unwrap();
+    // save_single 现在直接写到传入的目录，不创建子目录
+    let result = make_test_compilation_result();
+    let path = save_single(&result, &base).await.unwrap();
 
-    // 第二次保存，时间戳可能相同
-    let result2 = make_test_compilation_result();
-    let path2 = save_single(&result2, &base).await.unwrap();
-
-    // 路径不应相同
-    assert_ne!(path1, path2);
-    assert!(std::path::Path::new(&path2).exists());
-
-    // 清理
-    let _ = std::fs::remove_dir_all(&path1);
-    let _ = std::fs::remove_dir_all(&path2);
+    // 返回的路径就是传入的目录
+    assert_eq!(path, base);
+    assert!(std::path::Path::new(&path).join("all_cards.md").exists());
 }
 
 // ═══════════════════════════════════════════════════════

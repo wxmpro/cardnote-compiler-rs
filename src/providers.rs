@@ -157,6 +157,14 @@ impl ProviderRegistry {
             .map(|m| m.context_length)
     }
 
+    /// 查找指定提供商和模型的最大输出 tokens
+    pub fn find_model_max_output_tokens(&self, provider_id: &str, model_id: &str) -> Option<usize> {
+        self.providers
+            .get(provider_id)
+            .and_then(|p| p.find_model(model_id))
+            .map(|m| m.max_output_tokens)
+    }
+
     fn register(&mut self, provider: Provider) {
         self.providers.insert(provider.id.clone(), provider);
     }
@@ -347,16 +355,16 @@ impl ProviderRegistry {
                     id: "deepseek-v4-pro".to_string(),
                     name: "DeepSeek V4 Pro".to_string(),
                     context_length: 1_000_000,
-                    max_output_tokens: 8192,
+                    max_output_tokens: 1_000_000,
                     supports_json_mode: true,
                     supports_vision: false,
-                    description: "DeepSeek V4 Pro — 1M上下文".to_string(),
+                    description: "DeepSeek V4 Pro — 1M上下文/1M输出（官方未明确max_output，按用户指示设100万）".to_string(),
                 },
                 ModelInfo {
                     id: "deepseek-v4-flash".to_string(),
                     name: "DeepSeek V4 Flash".to_string(),
                     context_length: 1_000_000,
-                    max_output_tokens: 8192,
+                    max_output_tokens: 1_000_000,
                     supports_json_mode: true,
                     supports_vision: false,
                     description: "DeepSeek V4 Flash — 1M上下文".to_string(),

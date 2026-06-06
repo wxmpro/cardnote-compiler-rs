@@ -10,135 +10,12 @@
 mod common;
 
 use cardnote_compiler::dedup::semantic_dedup;
-use cardnote_compiler::doc_type::{DocTypeDetector, DocumentType};
 use cardnote_compiler::models::CardType;
 use cardnote_compiler::output::save_single_to_dir;
 use cardnote_compiler::pipeline::fnv1a_hash_str;
 use cardnote_compiler::quality::CardLintConfig;
-use cardnote_compiler::stages::cards::generate_cards;
 use cardnote_compiler::stages::entities::{extract_entities, unify_entities};
-use cardnote_compiler::stages::graph::build_graph;
-use cardnote_compiler::stages::summary::generate_summary;
 use common::*;
-
-// ═══════════════════════════════════════════════════════
-//  完整 4 阶段 Pipeline E2E 模拟
-// ═══════════════════════════════════════════════════════
-
-/// E2E: 模拟完整的 4 阶段编译流程，验证数据在各阶段间正确流转
-#[tokio::test]
-async fn test_e2e_four_stage_pipeline() {
-    // ── 阶段 1: Summary ──
-    let summary_mock = MockChat::new(mock_summary_response());
-    let summary = generate_summary(TEST_DOCUMENT, &summary_mock, &mock_load_prompt)
-        .await
-        .expect("阶段1 摘要失败");
-    assert!(!summary.title.is_empty());
-    assert!(summary.key_points.len() >= 3);
-
-    // ── 阶段 2: Entities ──
-    let entities_json_mock = MockChatJson::new(mock_entities_json());
-    let dummy_chat = MockChat::new("");
-    let entities =
-        extract_entities(TEST_DOCUMENT, &dummy_chat, &entities_json_mock, &mock_load_prompt)
-            .await
-            .expect("阶段2 实体提取失败");
-    assert_eq!(entities.len(), 4);
-
-    // 实体统一（模拟跨 chunk 合并）
-    let (unified_entities, _stats, _name_map) = unify_entities(&entities);
-    assert!(!unified_entities.is_empty());
-
-    // ── 阶段 3: Cards（legacy 格式 mock，验证成功解析路径） ──
-    let cards_mock = MockChat::new(mock_cards_legacy_response());
-    let cards = generate_cards(
-        TEST_DOCUMENT,
-        DocumentType::Unknown,
-        "测试文档",
-        &cards_mock,
-        &mock_load_prompt,
-    )
-    .await
-    .expect("卡片生成不应 panic");
-
-    assert!(!cards.is_empty(), "使用 legacy 格式 mock 应生成卡片");
-
-    // 卡片去重（即使 cards 为空也应工作）
-    let avg_len = if cards.is_empty() {
-        0
-    } else {
-        cards.iter().map(|c| c.content.chars().count()).sum::<usize>() / cards.len()
-    };
-    let config = cardnote_compiler::dedup::adaptive_dedup_config(avg_len);
-    let dedup_result = semantic_dedup(&cards, &config);
-    assert_eq!(dedup_result.stats.original_count, cards.len());
-
-    // ── 阶段 4: Graph ──
-    let graph_mock = MockChatJson::new(mock_graph_json());
-    let graph =
-        build_graph(TEST_DOCUMENT, &unified_entities, &dummy_chat, &graph_mock, &mock_load_prompt)
-            .await
-            .expect("阶段4 图谱构建失败");
-    assert_eq!(graph.relations.len(), 3);
-
-    // ── 端到端验证 ──
-    // 1. 卡片标题应唯一
-    let titles: Vec<&str> = dedup_result.cards.iter().map(|c| c.title.as_str()).collect();
-    let mut unique_titles = titles.clone();
-    unique_titles.sort();
-    unique_titles.dedup();
-    assert_eq!(titles.len(), unique_titles.len(), "去重后卡片标题应唯一");
-
-    // 2. 关系中的 source/target 应在实体列表中找到
-    let entity_names: Vec<&str> = unified_entities.iter().map(|e| e.name.as_str()).collect();
-    for rel in &graph.relations {
-        let source_in_entities = entity_names.contains(&rel.source.as_str());
-        let target_in_entities = entity_names.contains(&rel.target.as_str());
-        assert!(
-            source_in_entities || target_in_entities,
-            "关系 {} → {} 至少一个端点应在实体列表中",
-            rel.source,
-            rel.target
-        );
-    }
-
-    // 3. 每张卡片应有合法 UUID
-    for card in &dedup_result.cards {
-        assert!(!card.unique_id.is_empty(), "卡片 '{}' 应有 UUID", card.title);
-        assert_eq!(
-            card.unique_id.len(),
-            14,
-            "卡片 '{}' UUID 应为14位",
-            card.title
-        );
-    }
-}
-
-// ═══════════════════════════════════════════════════════
-//  E2E: 文档类型检测 → 卡片规划 → 卡片生成
-// ═══════════════════════════════════════════════════════
-
-#[test]
-fn test_e2e_doc_type_to_card_planning() {
-    use cardnote_compiler::stages::cards::CardPlanner;
-
-    // 1. 检测文档类型
-    let book_doc = "# 第一章\n\n内容\n\n# 第二章\n\n内容\n\n# 第三章\n\n内容".repeat(30);
-    let detection = DocTypeDetector::detect_with_confidence(&book_doc);
-    let doc_type = detection.doc_type;
-
-    // 2. 生成卡片规划
-    let char_count = book_doc.chars().count();
-    let plan = CardPlanner::plan(doc_type, char_count);
-
-    // 3. 验证规划合理性
-    assert!(!plan.is_empty(), "应有至少一种卡片类型");
-    let required_types: Vec<_> = plan.iter().filter(|p| p.required).collect();
-    assert!(
-        !required_types.is_empty(),
-        "应有至少一种必选卡片类型"
-    );
-}
 
 // ═══════════════════════════════════════════════════════
 //  E2E: 去重 → 质量过滤 → 输出
@@ -195,10 +72,10 @@ async fn test_e2e_dedup_filter_output() {
         .await
         .expect("保存应成功");
 
-    // 5. 验证输出文件完整性
-    assert!(temp_dir.path().join("summary.md").exists());
+    // 5. 验证输出文件完整性（Unified 模式输出 all_cards.md + entities.md + card_quality_report.md）
     assert!(temp_dir.path().join("all_cards.md").exists());
-    assert!(temp_dir.path().join("graph.mmd").exists());
+    assert!(temp_dir.path().join("entities.md").exists());
+    assert!(temp_dir.path().join("card_quality_report.md").exists());
 }
 
 // ═══════════════════════════════════════════════════════
@@ -363,25 +240,6 @@ async fn test_e2e_error_recovery_entities_failure() {
     }
 }
 
-#[tokio::test]
-async fn test_e2e_error_recovery_graph_invalid_json() {
-    let invalid_json = MockChatJson::new(serde_json::json!([1, 2, 3])); // 纯数字数组
-    let dummy_chat = MockChat::new("");
-    let entities = vec![make_test_entity("A", "概念")];
-
-    let result =
-        build_graph(TEST_DOCUMENT, &entities, &dummy_chat, &invalid_json, &mock_load_prompt)
-            .await;
-
-    // 应优雅降级，不 panic
-    match result {
-        Ok(graph) => {
-            assert!(graph.relations.is_empty());
-        }
-        Err(_) => {}
-    }
-}
-
 // ═══════════════════════════════════════════════════════
 //  E2E: FNV-1a 哈希稳定性
 // ═══════════════════════════════════════════════════════
@@ -403,58 +261,6 @@ fn test_e2e_fnv1a_hash_used_throughout_pipeline() {
 }
 
 // ═══════════════════════════════════════════════════════
-//  E2E: 实体统一 → 关系端点更新 → 关系合并
-// ═══════════════════════════════════════════════════════
-
-#[test]
-fn test_e2e_entity_unification_chain() {
-    use cardnote_compiler::stages::graph::{merge_relations, update_relation_endpoints};
-
-    // 1. 含变体的实体列表
-    let entities = vec![
-        cardnote_compiler::models::Entity {
-            name: "认知心理学（cognitive psychology）".to_string(),
-            entity_type: "学科".to_string(),
-            context: "".to_string(),
-        },
-        cardnote_compiler::models::Entity {
-            name: "认知心理学".to_string(),
-            entity_type: "学科".to_string(),
-            context: "研究人类认知过程的心理学分支".to_string(),
-        },
-        cardnote_compiler::models::Entity {
-            name: "行为主义".to_string(),
-            entity_type: "学派".to_string(),
-            context: "".to_string(),
-        },
-    ];
-
-    // 2. 实体统一
-    let (unified, _stats, name_map) = unify_entities(&entities);
-
-    // "认知心理学（cognitive psychology）" 和 "认知心理学" 应被合并
-    assert_eq!(unified.len(), 2);
-
-    // 3. 关系中使用旧名称
-    let relations = vec![
-        make_test_relation("认知心理学（cognitive psychology）", "行为主义", "对立于"),
-    ];
-
-    // 4. 更新关系端点
-    let updated = update_relation_endpoints(&relations, &name_map);
-
-    // 旧名称应被替换为统一后的名称
-    let unified_name = name_map
-        .get("认知心理学（cognitive psychology）")
-        .unwrap();
-    assert_eq!(updated[0].source, *unified_name);
-
-    // 5. 合并重复关系
-    let merged = merge_relations(&updated);
-    assert_eq!(merged.len(), 1);
-}
-
-// ═══════════════════════════════════════════════════════
 //  E2E: CompilationResult → save_single → 验证所有文件
 // ═══════════════════════════════════════════════════════
 
@@ -467,15 +273,11 @@ async fn test_e2e_full_output_integrity() {
         .await
         .expect("保存应成功");
 
-    // 检查每个文件的内容完整性
+    // 检查每个文件的内容完整性（Unified 模式产物：all_cards.md + entities.md + card_quality_report.md）
     let checks: Vec<(&str, &str)> = vec![
-        ("summary.md", "测试书籍"),
-        ("summary.md", "核心摘要"),
         ("all_cards.md", "测试驱动开发"),
         ("all_cards.md", "单元测试"),
         ("all_cards.md", "代码质量名言"),
-        ("graph.mmd", "graph TD"),
-        ("graph.mmd", "TDD"),
         ("entities.md", "实体列表"),
         ("card_quality_report.md", "卡片质量报告"),
     ];

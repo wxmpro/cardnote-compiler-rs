@@ -205,8 +205,7 @@ fn test_all_subcommands_listed_in_help() {
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     let expected_subcommands = [
-        "summary", "annotate", "cards", "graph", "init", "doctor", "quality", "scan", "history",
-        "review",
+        "init", "doctor", "quality", "scan", "history", "review",
     ];
 
     for cmd in &expected_subcommands {
@@ -216,40 +215,6 @@ fn test_all_subcommands_listed_in_help() {
             cmd
         );
     }
-}
-
-#[test]
-fn test_cli_summary_subcommand_args() {
-    let output = Command::new(cardc_binary())
-        .args(["summary", "--help"])
-        .output()
-        .unwrap();
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("FILE") || stdout.contains("file"));
-    assert!(stdout.contains("--output") || stdout.contains("-o"));
-}
-
-#[test]
-fn test_cli_cards_subcommand_args() {
-    let output = Command::new(cardc_binary())
-        .args(["cards", "--help"])
-        .output()
-        .unwrap();
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("FILE") || stdout.contains("file"));
-}
-
-#[test]
-fn test_cli_graph_subcommand_args() {
-    let output = Command::new(cardc_binary())
-        .args(["graph", "--help"])
-        .output()
-        .unwrap();
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("FILE") || stdout.contains("file"));
 }
 
 // ═══════════════════════════════════════════════════════

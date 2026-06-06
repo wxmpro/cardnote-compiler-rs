@@ -137,16 +137,8 @@ fn filter_rejected_cards(cards: &[Card]) -> (Vec<Card>, Vec<Card>) {
 
 /// 保存单篇编译结果
 pub async fn save_single(result: &CompilationResult, output_dir: &str) -> Result<String> {
-    // 优先使用源文件名（PDF 名称/书名）作为目录名
-    let title = if !result.source_file.is_empty() {
-        Path::new(&result.source_file)
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .filter(|s| !s.is_empty())
-    } else {
-        None
-    };
-    let dir = create_output_dir(output_dir, title).await?;
+    let dir = Path::new(output_dir).to_path_buf();
+    fs::create_dir_all(&dir).await?;
 
     // 质量门控：过滤被拒绝的卡片
     let (accepted_cards, _rejected_cards) = filter_rejected_cards(&result.cards);
@@ -163,17 +155,10 @@ pub async fn save_single(result: &CompilationResult, output_dir: &str) -> Result
     fs::create_dir_all(&cards_dir).await?;
     save_cards_by_type(&cards_dir, &accepted_cards).await?;
 
-    // 保存所有卡片(单文件) — 只输出通过门控的卡片
+    // 保存所有卡片(单文件) — 按类型分组，只输出通过门控的卡片
     let all_cards_path = dir.join("all_cards.md");
-    let all_cards_content: Vec<String> = accepted_cards
-        .iter()
-        .map(|c| {
-            let mut card = c.clone();
-            card.typo_fix();
-            card.to_markdown()
-        })
-        .collect();
-    fs::write(&all_cards_path, all_cards_content.join("\n")).await?;
+    let all_cards_md = build_all_cards_content(&accepted_cards);
+    fs::write(&all_cards_path, all_cards_md).await?;
 
     // 质量报告包含所有卡片（含被拦截的）
     let quality_path = dir.join("card_quality_report.md");
@@ -210,19 +195,20 @@ pub async fn save_book(
     all_cards: &[Card],
     all_entities: &[Entity],
     output_dir: &str,
-    book_title: &str,
+    _book_title: &str,
 ) -> Result<String> {
-    let dir = create_output_dir(output_dir, Some(book_title)).await?;
+    let dir = Path::new(output_dir).to_path_buf();
+    fs::create_dir_all(&dir).await?;
 
     // 保存卡片
     let cards_dir = dir.join("cards");
     fs::create_dir_all(&cards_dir).await?;
     save_cards_by_type(&cards_dir, all_cards).await?;
 
-    // 保存所有卡片
+    // 保存所有卡片 — 按类型分组
     let all_cards_path = dir.join("all_cards.md");
-    let all_cards_content: Vec<String> = all_cards.iter().map(|c| c.to_markdown()).collect();
-    fs::write(&all_cards_path, all_cards_content.join("\n")).await?;
+    let all_cards_md = build_all_cards_content(all_cards);
+    fs::write(&all_cards_path, all_cards_md).await?;
 
     let quality_path = dir.join("card_quality_report.md");
     fs::write(&quality_path, cards_quality_report(all_cards)).await?;
@@ -244,18 +230,10 @@ pub async fn save_single_to_dir(result: &CompilationResult, output_dir: &Path) -
     fs::create_dir_all(&cards_dir).await?;
     save_cards_by_type(&cards_dir, &result.cards).await?;
 
-    // 保存所有卡片(单文件)
+    // 保存所有卡片(单文件) — 按类型分组
     let all_cards_path = output_dir.join("all_cards.md");
-    let all_cards_content: Vec<String> = result
-        .cards
-        .iter()
-        .map(|c| {
-            let mut card = c.clone();
-            card.typo_fix();
-            card.to_markdown()
-        })
-        .collect();
-    fs::write(&all_cards_path, all_cards_content.join("\n")).await?;
+    let all_cards_md = build_all_cards_content(&result.cards);
+    fs::write(&all_cards_path, all_cards_md).await?;
 
     let quality_path = output_dir.join("card_quality_report.md");
     fs::write(&quality_path, cards_quality_report(&result.cards)).await?;
@@ -287,6 +265,7 @@ pub async fn save_single_to_dir(result: &CompilationResult, output_dir: &Path) -
 }
 
 /// 按类型保存卡片
+/// 文件内不再重复 # {类型} 标题（文件名已经是类型名）
 pub async fn save_cards_by_type(dir: &Path, cards: &[Card]) -> Result<()> {
     let mut by_type: HashMap<String, Vec<Card>> = HashMap::new();
     let mut total_fixes = 0;
@@ -301,7 +280,8 @@ pub async fn save_cards_by_type(dir: &Path, cards: &[Card]) -> Result<()> {
     for (card_type, cards_of_type) in by_type {
         let filename = format!("{}.md", card_type);
         let path = dir.join(&filename);
-        let content: Vec<String> = cards_of_type.iter().map(|c| c.to_markdown()).collect();
+        // 使用 to_markdown_body()：文件内不重复类型标题
+        let content: Vec<String> = cards_of_type.iter().map(|c| c.to_markdown_body()).collect();
         fs::write(&path, content.join("\n")).await?;
     }
 
@@ -310,6 +290,34 @@ pub async fn save_cards_by_type(dir: &Path, cards: &[Card]) -> Result<()> {
     }
 
     Ok(())
+}
+
+/// 将卡片按类型分组，生成 all_cards.md 内容
+/// 每组前一个大标题 # {类型}，组内卡片用 to_markdown_body()（无类型标题）
+fn build_all_cards_content(cards: &[Card]) -> String {
+    // 按类型分组并保持顺序（先出现的类型在前）
+    let mut type_order: Vec<String> = Vec::new();
+    let mut by_type: HashMap<String, Vec<&Card>> = HashMap::new();
+    for card in cards {
+        let type_name = card.card_type.to_string();
+        if !by_type.contains_key(&type_name) {
+            type_order.push(type_name.clone());
+        }
+        by_type.entry(type_name).or_default().push(card);
+    }
+
+    let mut parts: Vec<String> = Vec::new();
+    for type_name in type_order {
+        if let Some(cards_of_type) = by_type.get(&type_name) {
+            parts.push(format!("# {}\n", type_name));
+            for card in cards_of_type {
+                let mut cloned = (*card).clone();
+                cloned.typo_fix();
+                parts.push(cloned.to_markdown_body());
+            }
+        }
+    }
+    parts.join("\n")
 }
 
 /// 创建输出目录，目录名冲突时自动追加递增序号

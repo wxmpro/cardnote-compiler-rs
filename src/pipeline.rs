@@ -208,6 +208,8 @@ struct CompileContext {
     stage_models: Arc<HashMap<String, String>>,
     /// 根据模型上下文动态计算的单块最大字符数
     chunk_size: usize,
+    /// 输出目录（用于实时写入每块结果）
+    output_dir: Option<std::path::PathBuf>,
 }
 
 impl CompileContext {
@@ -222,6 +224,19 @@ impl CompileContext {
         max_tokens: Option<u32>,
     ) -> Result<serde_json::Value> {
         self.client.chat_json(messages, max_tokens).await
+    }
+
+    /// 调用 JSON mode 并返回（解析后 JSON, 原始文本）
+    async fn call_llm_json_with_raw(
+        &self,
+        messages: Vec<LlmMessage>,
+        max_tokens: Option<u32>,
+    ) -> Result<(serde_json::Value, String)> {
+        // 先走普通 chat 拿到原始文本，再自己解析
+        let raw = self.call_llm(messages.clone(), max_tokens).await?;
+        let json = serde_json::from_str::<serde_json::Value>(&raw)
+            .map_err(|e| crate::error::AppError::JsonParse(format!("原始响应 JSON 解析失败: {}\n原始响应前500字: {}", e, &raw[..raw.len().min(500)])))?;
+        Ok((json, raw))
     }
 
     fn load_prompt(&self, name: &str) -> Result<String> {
@@ -270,7 +285,7 @@ pub struct Pipeline {
 }
 
 impl Pipeline {
-    pub fn new(client: LlmClient) -> Self {
+    pub fn new(client: LlmClient, output_dir: Option<std::path::PathBuf>) -> Self {
         let mut prompts = HashMap::new();
 
         // 尝试多个候选路径查找 prompts 目录
@@ -320,10 +335,11 @@ impl Pipeline {
             cleanup_cache_dir();
         });
 
-        // 根据模型上下文长度动态计算分块大小
+        // 根据模型上下文长度与最大输出 tokens 动态计算分块大小
         let ctx_len = client.context_length().unwrap_or(200_000);
-        let chunk_size = crate::config::chunk_size_for_context(ctx_len);
-        println!("  模型上下文: {} tokens → 单块上限: {} 字符", ctx_len, chunk_size);
+        let max_out = client.max_output_tokens().unwrap_or(8192);
+        let chunk_size = crate::config::chunk_size_for_context(ctx_len, max_out);
+        println!("  模型上下文: {} tokens | 最大输出: {} tokens → 单块上限: {} 字符", ctx_len, max_out, chunk_size);
 
         Self {
             ctx: CompileContext {
@@ -331,6 +347,7 @@ impl Pipeline {
                 prompts: Arc::new(prompts),
                 stage_models: Arc::new(stage_model_map),
                 chunk_size,
+                output_dir,
             },
         }
     }
@@ -374,18 +391,21 @@ impl Pipeline {
         let mut diagnostics = CompilationDiagnostics::default();
         let ctx = self.ctx.clone();
 
-        let result = match with_retry("unified", || {
+        let doc_char_count = document.chars().count();
+        let (result, _raw) = match with_retry("unified", || {
             compile_chunk_unified(
                 ctx.clone(),
                 document.to_string(),
                 String::new(),
                 doc_type,
                 book_title.to_string(),
+                doc_char_count,
+                1,
             )
         })
         .await
         {
-            Ok(r) => r,
+            Ok((r, raw)) => (r, raw),
             Err(e) => {
                 let err_msg = format!("{}", e);
                 println!("  ✗ Unified 编译失败: {}", err_msg);
@@ -395,9 +415,16 @@ impl Pipeline {
                     retry_count: 3,
                     final_status: "failed".to_string(),
                 });
-                ChunkResult::default()
+                (ChunkResult::default(), String::new())
             }
         };
+
+        // 为单块结果分配 UUID 和 chunk_id
+        let mut result = result;
+        assign_unique_ids_with_base(&mut result.cards, 0);
+        for card in &mut result.cards {
+            card.chunk_id = "chunk_00".to_string();
+        }
 
         println!("\n{}", "=".repeat(60));
         println!("编译完成！");
@@ -453,6 +480,7 @@ impl Pipeline {
             ));
         }
         let chunks_len = chunks.len();
+        let total_doc_chars = document.chars().count();
         println!("  分成 {} 个语义块", chunks_len);
 
         // 2. Map — 串行编译（支持断点续编译）
@@ -481,14 +509,21 @@ impl Pipeline {
         }
 
         // 2b. 编译未完成的块（完全串行，一次一个请求）
+        let mut last_ts: i64 = 0;
         for idx in &pending {
             let idx = *idx;
             let ctx = self.ctx.clone();
             let (title, doc) = chunks[idx].clone();
             println!("  处理块 {}/{}...", idx + 1, chunks_len);
             let bt = book_title.to_string();
-            match compile_chunk_unified(ctx, doc, title, doc_type, bt).await {
-                Ok(result) => {
+            match compile_chunk_unified(ctx.clone(), doc, title, doc_type, bt, total_doc_chars, chunks_len).await {
+                Ok((mut result, raw_text)) => {
+                    // 分配跨块唯一的 UUID 和 chunk_id
+                    last_ts = assign_unique_ids_with_base(&mut result.cards, last_ts);
+                    for card in &mut result.cards {
+                        card.chunk_id = format!("chunk_{:02}", idx);
+                    }
+
                     println!(
                         "  ✓ 块 {}/{} 完成 — 实体 {} 个 | 卡片 {} 张",
                         idx + 1,
@@ -496,6 +531,30 @@ impl Pipeline {
                         result.entities.len(),
                         result.cards.len()
                     );
+                    // 实时写入 output 目录
+                    if let Some(ref out_dir) = ctx.output_dir {
+                        let chunks_dir = out_dir.join("chunks");
+                        std::fs::create_dir_all(&chunks_dir).ok();
+                        let prefix = format!("chunk_{:02}", idx);
+                        // 原始 JSON
+                        std::fs::write(chunks_dir.join(format!("{}_raw.json", prefix)), &raw_text).ok();
+                        // 解析后的结构化 JSON
+                        if let Ok(json) = serde_json::to_string_pretty(&result) {
+                            std::fs::write(chunks_dir.join(format!("{}.json", prefix)), json).ok();
+                        }
+                        // 卡片 Markdown（带类型标题，用于单块调试查看）
+                        let cards_md: Vec<String> = result.cards.iter().map(|c| c.to_markdown()).collect();
+                        std::fs::write(
+                            chunks_dir.join(format!("{}_cards.md", prefix)),
+                            cards_md.join("\n\n---\n\n"),
+                        ).ok();
+                        // 实体列表
+                        let mut entities_md = String::from("# 实体列表\n\n");
+                        for e in &result.entities {
+                            entities_md.push_str(&format!("- **{}** ({}): {}\n", e.name, e.entity_type, e.context));
+                        }
+                        std::fs::write(chunks_dir.join(format!("{}_entities.md", prefix)), entities_md).ok();
+                    }
                     chunk_results[idx] = result.clone();
                     cache.set_chunk_result(idx, result);
                     cache.save(source_file, &provider, &model, document).ok();
@@ -539,15 +598,23 @@ impl Pipeline {
                     println!("  重试块 {}/{}...", idx + 1, chunks_len);
                     let ctx = self.ctx.clone();
                     match compile_chunk_unified(
-                        ctx,
+                        ctx.clone(),
                         doc.clone(),
                         title.clone(),
                         doc_type,
                         book_title.to_string(),
+                        total_doc_chars,
+                        chunks_len,
                     )
                     .await
                     {
-                        Ok(result) => {
+                        Ok((mut result, raw_text)) => {
+                            // 为重试块分配 UUID 和 chunk_id
+                            last_ts = assign_unique_ids_with_base(&mut result.cards, last_ts);
+                            for card in &mut result.cards {
+                                card.chunk_id = format!("chunk_{:02}", idx);
+                            }
+
                             println!(
                                 "  ✓ 块 {}/{} 重试成功 — 实体 {} 个 | 卡片 {} 张",
                                 idx + 1,
@@ -555,6 +622,16 @@ impl Pipeline {
                                 result.entities.len(),
                                 result.cards.len()
                             );
+                            // 实时写入
+                            if let Some(ref out_dir) = ctx.output_dir {
+                                let chunks_dir = out_dir.join("chunks");
+                                std::fs::create_dir_all(&chunks_dir).ok();
+                                let prefix = format!("chunk_{:02}", idx);
+                                std::fs::write(chunks_dir.join(format!("{}_raw.json", prefix)), &raw_text).ok();
+                                if let Ok(json) = serde_json::to_string_pretty(&result) {
+                                    std::fs::write(chunks_dir.join(format!("{}.json", prefix)), json).ok();
+                                }
+                            }
                             chunk_results[*idx] = result;
                         }
                         Err(e) => {
@@ -779,31 +856,58 @@ async fn compile_chunk_unified(
     title_path: String,
     _doc_type: DocumentType,
     _book_title: String,
-) -> Result<ChunkResult> {
+    total_doc_chars: usize,
+    total_chunks: usize,
+) -> Result<(ChunkResult, String)> {
     let ctx_ref = &ctx;
 
     // 加载 unified prompt
     let prompt_template = ctx_ref.load_prompt("unified")?;
 
-    // 根据文档长度计算卡片数量建议
-    let doc_chars = document.chars().count();
-    let card_count_hint = match doc_chars {
-        0..=50_000 => "10-20张".to_string(),
-        50_001..=200_000 => "20-50张".to_string(),
-        200_001..=500_000 => "50-100张".to_string(),
-        500_001..=1_000_000 => "100-200张".to_string(),
-        _ => format!("{}-{}张", doc_chars / 10_000, doc_chars / 5_000),
+    // 根据**全书长度**规划目标卡片总量，再除以块数得到每块目标
+    // 这样避免大上下文模型把全书塞进一块却只产 30 张卡，也避免 LLM 对范围提示取下限
+    let total_chunks = total_chunks.max(1);
+    let (total_min, total_max) = match total_doc_chars {
+        0..=20_000 => (12, 22),
+        20_001..=60_000 => (25, 45),
+        60_001..=150_000 => (45, 80),
+        150_001..=350_000 => (80, 140),
+        350_001..=700_000 => (120, 200),
+        700_001..=1_500_000 => (180, 300),
+        _ => {
+            let min = total_doc_chars / 8_000;
+            let max = total_doc_chars / 5_000;
+            (min, max)
+        }
     };
 
+    // 输出硬上限：按模型实际 max_output_tokens 计算
+    // 每张 JSON 卡片 ≈ 700 tokens（保守），留 20% 给 JSON 包装和实体字段
+    let max_out = ctx_ref.client.max_output_tokens().unwrap_or(8192);
+    let output_limit_per_chunk = ((max_out as f64 * 0.8) / 700.0).max(3.0) as usize;
+    let max_achievable = total_chunks * output_limit_per_chunk;
+    let total_max = total_max.min(max_achievable);
+    let total_min = total_min.min(total_max);
+
+    // 单块卡片硬上限：质量优先，单块过多会导致每张卡片素材不足
+    const MAX_CARDS_PER_CHUNK: usize = 40;
+    let per_chunk_min = (total_min / total_chunks).max(8);
+    let per_chunk_max = (total_max / total_chunks)
+        .max(per_chunk_min + 5)
+        .min(MAX_CARDS_PER_CHUNK);
+    let card_count_hint = format!("{}-{}张", per_chunk_min, per_chunk_max);
+
+    // [S1] Prompt 边界标记：用 XML 标签隔离用户文档，降低 prompt injection 风险
     let prompt = prompt_template
-        .replace("{document}", &document)
+        .replace("{document}", &format!("\n\n<document>\n{}\n</document>\n\n", &document))
         .replace("{card_count_hint}", &card_count_hint);
 
     let system = "你是一位以认知边界爆破与知识最小信息单位为双重信仰的知识炼金术士。你的核心身份是认知牢笼的越狱者、溯源者、连接者和行为改变的系统设计师。所有输出必须严格基于原文，不添加原文没有的信息。".to_string();
 
-    // 调用 JSON mode
-    let response = ctx_ref
-        .call_llm_json(
+    // 调用 JSON mode，同时获取原始文本用于调试保存
+    let max_out = ctx_ref.client.max_output_tokens().unwrap_or(8192) as u32;
+    let (response_json, raw_text) = ctx_ref
+        .call_llm_json_with_raw(
             vec![
                 crate::models::LlmMessage {
                     role: "system".to_string(),
@@ -814,7 +918,7 @@ async fn compile_chunk_unified(
                     content: prompt,
                 },
             ],
-            Some(32768), // v4-pro 单次输出上限 384K，给足空间避免截断
+            Some(max_out),
         )
         .await
         .map_err(|e| {
@@ -822,25 +926,45 @@ async fn compile_chunk_unified(
         })?;
 
     // 解析 JSON 响应
-    let unified: crate::models::UnifiedChunkResponse = serde_json::from_value(response.clone())
+    let unified: crate::models::UnifiedChunkResponse = serde_json::from_value(response_json.clone())
         .map_err(|e| {
             AppError::JsonParse(format!(
                 "Unified 响应 JSON 解析失败: {}\n原始响应前500字: {}",
                 e,
-                response.to_string().chars().take(500).collect::<String>()
+                raw_text.chars().take(500).collect::<String>()
             ))
         })?;
 
     let (entities, cards) = unified.into_standard_cards();
 
-    Ok(ChunkResult {
+    let result = ChunkResult {
         document: document.clone(),
         title_path,
         summary: Summary::default(),
         entities,
         cards,
         relations: Vec::new(),
-    })
+    };
+
+    Ok((result, raw_text))
+}
+
+/// 为卡片分配秒级时间戳 UUID（YYYYMMDDHHMMSS）
+/// 同一秒内生成多张卡片时，自动 +1 秒保证唯一
+/// 传入 base_ts 支持跨块连续分配（避免多块间 UUID 碰撞）
+/// 返回最后分配的 ts，供下一块使用
+fn assign_unique_ids_with_base(cards: &mut [Card], base_ts: i64) -> i64 {
+    let mut last_ts = base_ts;
+    for card in cards.iter_mut() {
+        let now = chrono::Local::now().timestamp();
+        let ts = std::cmp::max(now, last_ts + 1);
+        last_ts = ts;
+        let dt = chrono::DateTime::from_timestamp(ts, 0)
+            .unwrap()
+            .with_timezone(&chrono::Local);
+        card.unique_id = dt.format("%Y%m%d%H%M%S").to_string();
+    }
+    last_ts
 }
 
 // ── 辅助函数 ──
@@ -1061,64 +1185,4 @@ mod tests {
         assert_eq!(result.len(), 2);
     }
 
-    #[test]
-    fn test_merge_doc_summaries_empty() {
-        let result = Pipeline::merge_doc_summaries(&[]);
-        assert_eq!(result.title, "");
-        assert!(result.key_points.is_empty());
-    }
-
-    #[test]
-    fn test_merge_doc_summaries_single() {
-        let summaries = vec![Summary {
-            title: "标题".to_string(),
-            overview: "概述".to_string(),
-            key_points: vec!["要点1".to_string()],
-            structure: "结构".to_string(),
-        }];
-        let result = Pipeline::merge_doc_summaries(&summaries);
-        assert_eq!(result.title, "标题");
-        assert_eq!(result.overview, "概述");
-        assert_eq!(result.key_points.len(), 1);
-        assert_eq!(result.structure, "结构");
-    }
-
-    #[test]
-    fn test_merge_doc_summaries_multiple() {
-        let summaries = vec![
-            Summary {
-                title: "文档A".to_string(),
-                overview: "概述A".to_string(),
-                key_points: vec!["A1".to_string(), "A2".to_string()],
-                structure: "结构A".to_string(),
-            },
-            Summary {
-                title: "文档B".to_string(),
-                overview: "概述B".to_string(),
-                key_points: vec!["B1".to_string()],
-                structure: "".to_string(),
-            },
-        ];
-        let result = Pipeline::merge_doc_summaries(&summaries);
-        assert_eq!(result.title, "文档A");
-        assert!(result.overview.contains("概述A"));
-        assert!(result.overview.contains("概述B"));
-        assert_eq!(result.key_points.len(), 3);
-        assert_eq!(result.structure, "结构A");
-    }
-
-    #[test]
-    fn test_merge_doc_summaries_points_limit() {
-        let mut summaries = Vec::new();
-        for i in 0..15 {
-            summaries.push(Summary {
-                title: format!("文档{}", i),
-                overview: "".to_string(),
-                key_points: vec!["要点".to_string(); 2],
-                structure: "".to_string(),
-            });
-        }
-        let result = Pipeline::merge_doc_summaries(&summaries);
-        assert_eq!(result.key_points.len(), 20);
-    }
 }

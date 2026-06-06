@@ -126,22 +126,55 @@ impl Card {
     }
 
     /// 转义 Markdown 特殊字符，防止内容破坏输出格式
+    /// 策略：
+    /// 1. `---` 转义为 `\---`（避免变成水平线）
+    /// 2. 行首的 `#` 转义（避免变成更大的标题，与卡片包装层级冲突）
+    /// 3. 行首的 `>` 转义（避免变成引用块）
+    /// 内容中间的 `#` / `>` 不转义（保留如 "C#语言"、"a > b" 的正常用法）
     fn escape_markdown(text: &str) -> String {
         text.replace("---", "\\---")
-            .replace('#'.to_string().as_str(), "\\#")
+            .lines()
+            .map(|line| {
+                let trimmed = line.trim_start();
+                if trimmed.starts_with('#') || trimmed.starts_with('>') {
+                    format!("\\{}", line)
+                } else {
+                    line.to_string()
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
     }
 
     fn to_default_markdown(&self) -> String {
+        let mut lines = vec![format!("# {}", self.card_type), "".to_string()];
+        self.append_body_markdown(&mut lines);
+        lines.join("\n")
+    }
+
+    /// 输出卡片正文（不包含 # {card_type} 类型标题）
+    pub fn to_markdown_body(&self) -> String {
+        match self.card_type {
+            CardType::Quote => {
+                let mut lines = Vec::new();
+                self.append_quote_body_markdown(&mut lines);
+                lines.join("\n")
+            }
+            _ => {
+                let mut lines = Vec::new();
+                self.append_body_markdown(&mut lines);
+                lines.join("\n")
+            }
+        }
+    }
+
+    fn append_body_markdown(&self, lines: &mut Vec<String>) {
         let escaped_content = Self::escape_markdown(&self.content);
         let escaped_title = Self::escape_markdown(&self.title);
-        let mut lines = vec![
-            format!("# {}", self.card_type),
-            "".to_string(),
-            format!("**标题：** {}", escaped_title),
-            "".to_string(),
-            escaped_content,
-            "".to_string(),
-        ];
+        lines.push(format!("**标题：** {}", escaped_title));
+        lines.push("".to_string());
+        lines.push(escaped_content);
+        lines.push("".to_string());
         if !self.reference.is_empty() {
             lines.push(format!(
                 "**ref：** {}",
@@ -149,12 +182,13 @@ impl Card {
             ));
             lines.push("".to_string());
         }
-        self.append_traceability_markdown(&mut lines);
-        lines.push(format!("**uuid：** {}", self.unique_id));
-        lines.push("".to_string());
+        self.append_traceability_markdown(lines);
+        if !self.unique_id.is_empty() {
+            lines.push(format!("**uuid：** {}", self.unique_id));
+            lines.push("".to_string());
+        }
         lines.push("***".to_string());
         lines.push("".to_string());
-        lines.join("\n")
     }
 
     fn append_traceability_markdown(&self, lines: &mut Vec<String>) {
@@ -224,26 +258,38 @@ impl Card {
     }
 
     fn to_quote_markdown(&self) -> String {
-        let mut lines = vec![
-            format!("# {}", self.card_type),
-            "".to_string(),
-            format!("**标题：** {}", self.title),
-            "".to_string(),
-        ];
+        let mut lines = vec![format!("# {}", self.card_type), "".to_string()];
+        self.append_quote_body_markdown(&mut lines);
+        lines.join("\n")
+    }
+
+    fn append_quote_body_markdown(&self, lines: &mut Vec<String>) {
+        let escaped_title = Self::escape_markdown(&self.title);
+        lines.push(format!("**标题：** {}", escaped_title));
+        lines.push("".to_string());
         if !self.original_text.is_empty() {
-            lines.push(format!("**原文：** {}", self.original_text));
+            lines.push(format!(
+                "**原文：** {}",
+                Self::escape_markdown(&self.original_text)
+            ));
             lines.push("".to_string());
         }
         if !self.source.is_empty() {
-            lines.push(format!("**出处：** {}", self.source));
+            lines.push(format!(
+                "**出处：** {}",
+                Self::escape_markdown(&self.source)
+            ));
             lines.push("".to_string());
         }
         if !self.paraphrase.is_empty() {
-            lines.push(format!("**仿写：** {}", self.paraphrase));
+            lines.push(format!(
+                "**仿写：** {}",
+                Self::escape_markdown(&self.paraphrase)
+            ));
             lines.push("".to_string());
         }
         if !self.content.is_empty() && self.content != self.original_text {
-            lines.push(self.content.clone());
+            lines.push(Self::escape_markdown(&self.content));
             lines.push("".to_string());
         }
         for related in &self.related_cards {
@@ -253,15 +299,19 @@ impl Card {
             lines.push("".to_string());
         }
         if !self.reference.is_empty() {
-            lines.push(format!("**ref：** {}", self.reference));
+            lines.push(format!(
+                "**ref：** {}",
+                Self::escape_markdown(&self.reference)
+            ));
             lines.push("".to_string());
         }
-        self.append_traceability_markdown(&mut lines);
-        lines.push(format!("**uuid：** {}", self.unique_id));
-        lines.push("".to_string());
+        self.append_traceability_markdown(lines);
+        if !self.unique_id.is_empty() {
+            lines.push(format!("**uuid：** {}", self.unique_id));
+            lines.push("".to_string());
+        }
         lines.push("***".to_string());
         lines.push("".to_string());
-        lines.join("\n")
     }
 }
 
