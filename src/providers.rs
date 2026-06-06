@@ -355,19 +355,21 @@ impl ProviderRegistry {
                     id: "deepseek-v4-pro".to_string(),
                     name: "DeepSeek V4 Pro".to_string(),
                     context_length: 1_000_000,
-                    max_output_tokens: 1_000_000,
+                    // 官方标称 max_output = 384K，保守取 150K 留安全余量
+                    // https://api-docs.deepseek.com/zh-cn/quick_start/pricing/
+                    max_output_tokens: 150_000,
                     supports_json_mode: true,
                     supports_vision: false,
-                    description: "DeepSeek V4 Pro — 1M上下文/1M输出（官方未明确max_output，按用户指示设100万）".to_string(),
+                    description: "DeepSeek V4 Pro — 1M上下文/384K输出(保守设150K)".to_string(),
                 },
                 ModelInfo {
                     id: "deepseek-v4-flash".to_string(),
                     name: "DeepSeek V4 Flash".to_string(),
                     context_length: 1_000_000,
-                    max_output_tokens: 1_000_000,
+                    max_output_tokens: 150_000,
                     supports_json_mode: true,
                     supports_vision: false,
-                    description: "DeepSeek V4 Flash — 1M上下文".to_string(),
+                    description: "DeepSeek V4 Flash — 1M上下文/384K输出(保守设150K)".to_string(),
                 },
             ],
         });

@@ -864,38 +864,78 @@ async fn compile_chunk_unified(
     // 加载 unified prompt
     let prompt_template = ctx_ref.load_prompt("unified")?;
 
-    // 根据**全书长度**规划目标卡片总量，再除以块数得到每块目标
-    // 这样避免大上下文模型把全书塞进一块却只产 30 张卡，也避免 LLM 对范围提示取下限
-    let total_chunks = total_chunks.max(1);
-    let (total_min, total_max) = match total_doc_chars {
-        0..=20_000 => (12, 22),
-        20_001..=60_000 => (25, 45),
-        60_001..=150_000 => (45, 80),
-        150_001..=350_000 => (80, 140),
-        350_001..=700_000 => (120, 200),
-        700_001..=1_500_000 => (180, 300),
-        _ => {
-            let min = total_doc_chars / 8_000;
-            let max = total_doc_chars / 5_000;
-            (min, max)
-        }
-    };
+    // ═══════════════════════════════════════════════════════════════════
+    //  卡片数量计算理论推导（由字符数决定，不是拍脑袋）
+    // ═══════════════════════════════════════════════════════════════════
+    //
+    //  1. 每张卡片需要多少原始素材？
+    //     从 prompt 卡片质量标准反推：
+    //     - 术语卡：定义+解释+1-3个例子 ≈ 300字输出 → 需1500字素材
+    //     - 新知卡：已知+新知+例子       ≈ 400字输出 → 需2500字素材
+    //     - 人物卡：定位+小传+贡献+时间线 ≈ 500字输出 → 需3000字素材
+    //     - 行动卡：原理+步骤+检验       ≈ 400字输出 → 需2000字素材
+    //     - 金句卡：原文+解读+仿写       ≈ 300字输出 → 需500字素材
+    //     平均：一张卡片 ≈ 2500 字符原始素材
+    //
+    //  2. 信息密度系数（可提取字符 / 总字符）
+    //     - 学术专著：0.5
+    //     - 知识类书籍：0.45
+    //     - 通俗读物：0.35
+    //     - 散文/小说：0.2
+    //
+    //  3. 全书目标卡片数公式
+    //     目标 = 总字符数 × 信息密度系数 / 每张卡片所需素材
+    //          = 总字符数 × 0.45 / 2500
+    //          = 总字符数 / 5556
+    //
+    //  4. 单块卡片数
+    //     不设硬上限。只有文档 > chunk_size 时才分块。
+    //     分块时：每块目标 = ceil(全书目标 / 块数)
+    //
+    //  5. 分块判断
+    //     chunk_size = min(input_based, output_based).clamp(10K, 500K)
+    //     input_based  = (context_length - 2800) / 1.3
+    //     output_based = (max_output_tokens / 700) × 4000
+    //     文档 > chunk_size → 分块
+    //     文档 ≤ chunk_size → 1块1次请求
+    //
+    //  示例：《人生模式》436,320 字符
+    //     目标 = 436,320 / 5556 ≈ 78 张
+    //     chunk_size (1M context / 150K output) = 500K
+    //     436K < 500K → 1块 → 1次请求 → 一次输出78张
+    // ═══════════════════════════════════════════════════════════════════
 
-    // 输出硬上限：按模型实际 max_output_tokens 计算
-    // 每张 JSON 卡片 ≈ 700 tokens（保守），留 20% 给 JSON 包装和实体字段
+    let total_chunks = total_chunks.max(1);
+
+    // 防御性检查：空文档直接返回空结果，避免后续 .max(8) 变成要求生成8张空卡片
+    if total_doc_chars == 0 {
+        return Ok((ChunkResult { cards: vec![], ..Default::default() }, "空文档，跳过处理".to_string()));
+    }
+
+    // 全书目标卡片数 = 总字符数 / 5556
+    // 5556 = 2500(素材/张) / 0.45(密度系数)，取整便于计算
+    let total_target = (total_doc_chars as f64 / 5556.0).ceil() as usize;
+    let total_target = total_target.max(8).min(300); // 边界保护：最少8张，最多300张
+
+    // 输出容量校验：按模型实际 max_output_tokens 计算能产多少张
     let max_out = ctx_ref.client.max_output_tokens().unwrap_or(8192);
     let output_limit_per_chunk = ((max_out as f64 * 0.8) / 700.0).max(3.0) as usize;
-    let max_achievable = total_chunks * output_limit_per_chunk;
-    let total_max = total_max.min(max_achievable);
-    let total_min = total_min.min(total_max);
+    let total_achievable = total_chunks * output_limit_per_chunk;
 
-    // 单块卡片硬上限：质量优先，单块过多会导致每张卡片素材不足
-    const MAX_CARDS_PER_CHUNK: usize = 40;
-    let per_chunk_min = (total_min / total_chunks).max(8);
-    let per_chunk_max = (total_max / total_chunks)
-        .max(per_chunk_min + 5)
-        .min(MAX_CARDS_PER_CHUNK);
-    let card_count_hint = format!("{}-{}张", per_chunk_min, per_chunk_max);
+    // 取公式目标和输出容量的较小值
+    let total_target = total_target.min(total_achievable);
+
+    // 每块目标（向上取整，确保不遗漏）
+    let per_chunk_target = (total_target + total_chunks - 1) / total_chunks;
+    let per_chunk_target = per_chunk_target.max(8); // 最少8张，避免LLM敷衍
+
+    // 单块卡片软上限：80张 ≈ 一本中等书籍（15万字符）的目标提取量
+    // 来源：旧代码分档表中 60K-150K 文档对应 45-80 张，单块信息密度不应超过此量级
+    const SOFT_MAX_CARDS_PER_CHUNK: usize = 80;
+    let per_chunk_target = per_chunk_target.min(SOFT_MAX_CARDS_PER_CHUNK);
+
+    // card_count_hint：给LLM一个明确的单块目标数字
+    let card_count_hint = format!("{}张", per_chunk_target);
 
     // [S1] Prompt 边界标记：用 XML 标签隔离用户文档，降低 prompt injection 风险
     let prompt = prompt_template
