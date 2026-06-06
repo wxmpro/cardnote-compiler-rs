@@ -166,11 +166,6 @@ pub async fn save_single(result: &CompilationResult, output_dir: &str) -> Result
     fs::create_dir_all(&cards_dir).await?;
     save_cards_by_type(&cards_dir, &accepted_cards).await?;
 
-    // 保存所有卡片(单文件) — 按类型分组，只输出通过门控的卡片
-    let all_cards_path = dir.join("all_cards.md");
-    let all_cards_md = build_all_cards_content(&accepted_cards);
-    fs::write(&all_cards_path, all_cards_md).await?;
-
     // 质量报告包含所有卡片（含被拦截的）
     let quality_path = dir.join("card_quality_report.md");
     fs::write(&quality_path, cards_quality_report(&result.cards)).await?;
@@ -216,10 +211,6 @@ pub async fn save_book(
     fs::create_dir_all(&cards_dir).await?;
     save_cards_by_type(&cards_dir, all_cards).await?;
 
-    // 保存所有卡片 — 按类型分组
-    let all_cards_path = dir.join("all_cards.md");
-    let all_cards_md = build_all_cards_content(all_cards);
-    fs::write(&all_cards_path, all_cards_md).await?;
 
     let quality_path = dir.join("card_quality_report.md");
     fs::write(&quality_path, cards_quality_report(all_cards)).await?;
@@ -240,11 +231,6 @@ pub async fn save_single_to_dir(result: &CompilationResult, output_dir: &Path) -
     let cards_dir = output_dir.join("cards");
     fs::create_dir_all(&cards_dir).await?;
     save_cards_by_type(&cards_dir, &result.cards).await?;
-
-    // 保存所有卡片(单文件) — 按类型分组
-    let all_cards_path = output_dir.join("all_cards.md");
-    let all_cards_md = build_all_cards_content(&result.cards);
-    fs::write(&all_cards_path, all_cards_md).await?;
 
     let quality_path = output_dir.join("card_quality_report.md");
     fs::write(&quality_path, cards_quality_report(&result.cards)).await?;
@@ -303,7 +289,8 @@ pub async fn save_cards_by_type(dir: &Path, cards: &[Card]) -> Result<()> {
     Ok(())
 }
 
-/// 将卡片按类型分组，生成 all_cards.md 内容
+#[allow(dead_code)]
+/// 将卡片按类型分组，生成 all_cards.md 内容（保留供内部使用）
 /// 每组前一个大标题 # {类型}，组内卡片用 to_markdown_body()（无类型标题）
 fn build_all_cards_content(cards: &[Card]) -> String {
     // 按类型分组并保持顺序（先出现的类型在前）

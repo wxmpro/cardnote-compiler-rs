@@ -809,6 +809,43 @@ pub struct UnifiedCard {
     pub evidence: String,
 }
 
+/// 单类型卡片响应（独立 prompt 模式）
+/// 只返回 cards 数组，不返回 entities
+#[derive(Debug, Clone, Deserialize)]
+pub struct TypeCardsResponse {
+    pub cards: Vec<UnifiedCard>,
+}
+
+impl TypeCardsResponse {
+    /// 将单类型响应转换为标准 Card 列表
+    /// card_type 由调用方强制指定，不依赖 LLM 返回的字符串
+    pub fn into_cards(self, forced_type: CardType) -> Vec<Card> {
+        self.cards
+            .into_iter()
+            .map(|uc| Card {
+                title: uc.title,
+                content: uc.content,
+                card_type: forced_type.clone(),
+                reference: uc.reference,
+                original_text: uc.original_text,
+                source: String::new(),
+                paraphrase: String::new(),
+                related_cards: Vec::new(),
+                source_file: String::new(),
+                chunk_id: String::new(),
+                evidence: uc.evidence,
+                location: String::new(),
+                quality_score: default_card_quality_score(),
+                status: CardStatus::Accepted,
+                reject_reason: String::new(),
+                retry_count: 0,
+                degraded_from: None,
+                unique_id: String::new(),
+            })
+            .collect()
+    }
+}
+
 impl UnifiedChunkResponse {
     /// 将 Unified 响应转换为标准 ChunkResult 组件
     /// 只返回实体和卡片（不生成摘要和关系图谱）

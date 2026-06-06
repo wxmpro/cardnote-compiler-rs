@@ -9,8 +9,8 @@ use crate::api::LlmClient;
 use crate::doc_type::{DocTypeDetector, DocumentType};
 use crate::error::{AppError, Result};
 use crate::models::{
-    Card, ChunkInfo, CompilationDiagnostics, CompilationResult, Entity, KnowledgeGraph, LlmMessage,
-    StageFail, Summary,
+    Card, CardType, ChunkInfo, CompilationDiagnostics, CompilationResult, Entity, KnowledgeGraph,
+    LlmMessage, StageFail, Summary, TypeCardsResponse,
 };
 use crate::stages::common::{ChatFn, ChatJsonFn};
 use crate::stages::entities::unify_entities;
@@ -374,15 +374,15 @@ impl Pipeline {
         }
     }
 
-    /// 单文档 Unified 编译
+    /// 单文档独立类型编译（每种类型单独调用 LLM）
     async fn run_single(
         &self,
         document: &str,
         source_file: &str,
-        doc_type: DocumentType,
-        book_title: &str,
+        _doc_type: DocumentType,
+        _book_title: &str,
     ) -> Result<CompilationResult> {
-        println!("\n[模式] 单轮 Unified 编译（1 次请求）");
+        println!("\n[模式] 独立类型编译（8 次请求：实体 + 7 种卡片）");
         println!("{}", "-".repeat(60));
 
         let mut diagnostics = CompilationDiagnostics::default();
@@ -390,71 +390,91 @@ impl Pipeline {
 
         let doc_char_count = document.chars().count();
 
-        // 第一次：核心类型
-        let core_types = "术语卡、新知卡、反常识卡、行动卡";
-        let (core_result, _core_raw) = match with_retry("unified_core", || {
-            compile_chunk_unified(
+        // 1. 实体提取
+        println!("\n[1/8] 实体提取...");
+        let all_entities = match with_retry("entities", || {
+            compile_chunk_entities(
                 ctx.clone(),
                 document.to_string(),
                 String::new(),
-                doc_type,
-                book_title.to_string(),
-                doc_char_count,
-                1,
-                core_types,
             )
         })
         .await
         {
-            Ok((r, raw)) => (r, raw),
+            Ok((entities, _)) => {
+                println!("  ✓ 实体: {} 个", entities.len());
+                entities
+            }
             Err(e) => {
                 let err_msg = format!("{}", e);
-                println!("  ✗ 核心类型编译失败: {}", err_msg);
+                println!("  ✗ 实体提取失败: {}", err_msg);
                 diagnostics.failures.push(StageFail {
-                    stage: "unified_core".to_string(),
+                    stage: "entities".to_string(),
                     error: err_msg,
                     retry_count: 3,
                     final_status: "failed".to_string(),
                 });
-                (ChunkResult::default(), String::new())
+                Vec::new()
             }
         };
 
-        // 第二次：补充类型
-        let supp_types = "人物卡、金句卡、综述卡";
-        let (supp_result, _supp_raw) = match with_retry("unified_supp", || {
-            compile_chunk_unified(
-                ctx.clone(),
-                document.to_string(),
-                String::new(),
-                doc_type,
-                book_title.to_string(),
-                doc_char_count,
-                1,
-                supp_types,
-            )
-        })
-        .await
-        {
-            Ok((r, raw)) => (r, raw),
-            Err(e) => {
-                let err_msg = format!("{}", e);
-                println!("  ✗ 补充类型编译失败: {}", err_msg);
-                diagnostics.failures.push(StageFail {
-                    stage: "unified_supp".to_string(),
-                    error: err_msg,
-                    retry_count: 3,
-                    final_status: "failed".to_string(),
-                });
-                (ChunkResult::default(), String::new())
-            }
-        };
+        // 2. 计算各类型目标数量
+        let type_targets = calculate_type_targets(doc_char_count, 1);
 
-        // 合并两次结果
-        let mut all_entities = core_result.entities;
-        all_entities.extend(supp_result.entities);
-        let mut all_cards = core_result.cards;
-        all_cards.extend(supp_result.cards);
+        // 3. 依次编译每种卡片类型
+        let card_types = vec![
+            CardType::Term,
+            CardType::Knowledge,
+            CardType::CounterIntuit,
+            CardType::Action,
+            CardType::Person,
+            CardType::Quote,
+            CardType::Review,
+        ];
+
+        let mut all_cards = Vec::new();
+        let _total_types = card_types.len();
+
+        for (i, card_type) in card_types.iter().enumerate() {
+            let stage_num = i + 2; // 实体是 1，卡片从 2 开始
+            let target = type_targets.get(card_type).copied().unwrap_or(8);
+            let hint = format!("{}张", target);
+            println!("\n[{}/8] {} (目标: {})...", stage_num, card_type.as_str(), hint);
+
+            let ctx_for_retry = ctx.clone();
+            let ct = card_type.clone();
+            let ht = hint.clone();
+            match with_retry(card_type.as_str(), || {
+                compile_chunk_by_type(
+                    ctx_for_retry.clone(),
+                    document.to_string(),
+                    String::new(),
+                    ct.clone(),
+                    ht.clone(),
+                )
+            })
+            .await
+            {
+                Ok((mut cards, _)) => {
+                    println!(
+                        "  ✓ {}: {} 张",
+                        card_type.as_str(),
+                        cards.len()
+                    );
+                    all_cards.append(&mut cards);
+                }
+                Err(e) => {
+                    let err_msg = format!("{}", e);
+                    println!("  ✗ {} 编译失败: {}", card_type.as_str(), err_msg);
+                    diagnostics.failures.push(StageFail {
+                        stage: card_type.as_str().to_string(),
+                        error: err_msg,
+                        retry_count: 3,
+                        final_status: "failed".to_string(),
+                    });
+                }
+            }
+        }
 
         // 为单块结果分配 UUID 和 chunk_id
         assign_unique_ids_with_base(&mut all_cards, 0);
@@ -495,16 +515,16 @@ impl Pipeline {
         })
     }
 
-    // ── Map-Reduce 编译 ──
+    // ── Map-Reduce 编译（独立类型模式）──
 
     async fn run_map_reduce(
         &self,
         document: &str,
         source_file: &str,
-        doc_type: DocumentType,
-        book_title: &str,
+        _doc_type: DocumentType,
+        _book_title: &str,
     ) -> Result<CompilationResult> {
-        println!("\n[模式] 分块 Map-Reduce 编译（阈值: {} 字符）", self.ctx.chunk_size);
+        println!("\n[模式] 分块独立类型编译（阈值: {} 字符，每块 8 次请求）", self.ctx.chunk_size);
         println!("{}", "-".repeat(60));
 
         // 1. Split
@@ -544,94 +564,79 @@ impl Pipeline {
             println!("  🔄 继续编译未完成的块: {:?}", pending);
         }
 
-        // 2b. 编译未完成的块（两次触发：核心类型 + 补充类型）
-        const CORE_TYPES: &str = "术语卡、新知卡、反常识卡、行动卡";
-        const SUPP_TYPES: &str = "人物卡、金句卡、综述卡";
+        // 计算各类型目标数量
+        let type_targets = calculate_type_targets(total_doc_chars, chunks_len);
+
+        let card_types = vec![
+            CardType::Term,
+            CardType::Knowledge,
+            CardType::CounterIntuit,
+            CardType::Action,
+            CardType::Person,
+            CardType::Quote,
+            CardType::Review,
+        ];
+
         let mut last_ts: i64 = 0;
         for idx in &pending {
             let idx = *idx;
             let ctx = self.ctx.clone();
             let (title, doc) = chunks[idx].clone();
-            println!("  处理块 {}/{}...", idx + 1, chunks_len);
-            let bt = book_title.to_string();
+            println!("\n  处理块 {}/{}...", idx + 1, chunks_len);
 
-            // 第一次：核心类型
-            let core_result = match compile_chunk_unified(
-                ctx.clone(),
-                doc.clone(),
-                title.clone(),
-                doc_type,
-                bt.clone(),
-                total_doc_chars,
-                chunks_len,
-                CORE_TYPES,
-            )
-            .await
-            {
-                Ok((r, raw)) => {
-                    println!(
-                        "    ✓ 核心类型: {} 实体 | {} 卡片",
-                        r.entities.len(),
-                        r.cards.len()
-                    );
-                    Some((r, raw))
-                }
-                Err(e) => {
-                    println!("    ✗ 核心类型编译失败: {}", e);
-                    None
-                }
-            };
-
-            // 第二次：补充类型
-            let supp_result = match compile_chunk_unified(
-                ctx.clone(),
-                doc.clone(),
-                title.clone(),
-                doc_type,
-                bt,
-                total_doc_chars,
-                chunks_len,
-                SUPP_TYPES,
-            )
-            .await
-            {
-                Ok((r, raw)) => {
-                    println!(
-                        "    ✓ 补充类型: {} 实体 | {} 卡片",
-                        r.entities.len(),
-                        r.cards.len()
-                    );
-                    Some((r, raw))
-                }
-                Err(e) => {
-                    println!("    ✗ 补充类型编译失败: {}", e);
-                    None
-                }
-            };
-
-            // 合并两次结果
+            // 1. 实体提取
             let mut merged = ChunkResult {
-                document: doc,
-                title_path: title,
+                document: doc.clone(),
+                title_path: title.clone(),
                 ..Default::default()
             };
             let mut all_raw = String::new();
-            if let Some((r, raw)) = core_result {
-                merged.entities.extend(r.entities);
-                merged.cards.extend(r.cards);
-                all_raw.push_str(&raw);
-            }
-            if let Some((r, raw)) = supp_result {
-                merged.entities.extend(r.entities);
-                merged.cards.extend(r.cards);
-                if !all_raw.is_empty() {
-                    all_raw.push_str("\n\n---\n\n");
+
+            match compile_chunk_entities(ctx.clone(), doc.clone(), title.clone()).await {
+                Ok((entities, raw)) => {
+                    println!("    ✓ 实体: {} 个", entities.len());
+                    merged.entities.extend(entities);
+                    all_raw.push_str(&raw);
                 }
-                all_raw.push_str(&raw);
+                Err(e) => {
+                    println!("    ✗ 实体提取失败: {}", e);
+                }
+            }
+
+            // 2. 依次编译每种卡片类型
+            for card_type in &card_types {
+                let target = type_targets.get(card_type).copied().unwrap_or(8);
+                let hint = format!("{}张", target);
+
+                match compile_chunk_by_type(
+                    ctx.clone(),
+                    doc.clone(),
+                    title.clone(),
+                    card_type.clone(),
+                    hint,
+                )
+                .await
+                {
+                    Ok((mut cards, raw)) => {
+                        println!(
+                            "    ✓ {}: {} 张",
+                            card_type.as_str(),
+                            cards.len()
+                        );
+                        merged.cards.append(&mut cards);
+                        if !all_raw.is_empty() {
+                            all_raw.push_str("\n\n---\n\n");
+                        }
+                        all_raw.push_str(&raw);
+                    }
+                    Err(e) => {
+                        println!("    ✗ {} 编译失败: {}", card_type.as_str(), e);
+                    }
+                }
             }
 
             if merged.cards.is_empty() {
-                let err_msg = format!("块 {} 两次编译均无输出", idx + 1);
+                let err_msg = format!("块 {} 编译无输出", idx + 1);
                 println!("  ✗ {}", err_msg);
                 failed_chunks.push((idx, err_msg));
                 continue;
@@ -644,7 +649,7 @@ impl Pipeline {
             }
 
             println!(
-                "  ✓ 块 {}/{} 合并完成 — 实体 {} 个 | 卡片 {} 张",
+                "  ✓ 块 {}/{} 完成 — 实体 {} 个 | 卡片 {} 张",
                 idx + 1,
                 chunks_len,
                 merged.entities.len(),
@@ -699,7 +704,6 @@ impl Pipeline {
                 (fail_rate * 100.0) as u32
             );
 
-            // 需要重新分块获取失败的块的标题和内容
             let chunks_for_retry = self.semantic_chunk(document);
             let mut still_failed: Vec<(usize, String)> = Vec::new();
 
@@ -707,61 +711,33 @@ impl Pipeline {
                 if let Some((title, doc)) = chunks_for_retry.get(*idx) {
                     println!("  重试块 {}/{}...", idx + 1, chunks_len);
                     let ctx = self.ctx.clone();
-                    let bt = book_title.to_string();
 
-                    // 重试：核心类型
-                    let core_retry = match compile_chunk_unified(
-                        ctx.clone(),
-                        doc.clone(),
-                        title.clone(),
-                        doc_type,
-                        bt.clone(),
-                        total_doc_chars,
-                        chunks_len,
-                        CORE_TYPES,
-                    )
-                    .await
-                    {
-                        Ok((r, _)) => Some(r),
-                        Err(e) => {
-                            println!("    ✗ 核心类型重试失败: {}", e);
-                            None
-                        }
-                    };
-
-                    // 重试：补充类型
-                    let supp_retry = match compile_chunk_unified(
-                        ctx.clone(),
-                        doc.clone(),
-                        title.clone(),
-                        doc_type,
-                        bt,
-                        total_doc_chars,
-                        chunks_len,
-                        SUPP_TYPES,
-                    )
-                    .await
-                    {
-                        Ok((r, _)) => Some(r),
-                        Err(e) => {
-                            println!("    ✗ 补充类型重试失败: {}", e);
-                            None
-                        }
-                    };
-
-                    // 合并重试结果
                     let mut merged = ChunkResult {
                         document: doc.clone(),
                         title_path: title.clone(),
                         ..Default::default()
                     };
-                    if let Some(r) = core_retry {
-                        merged.entities.extend(r.entities);
-                        merged.cards.extend(r.cards);
+
+                    // 重试：实体提取
+                    if let Ok((entities, _)) = compile_chunk_entities(ctx.clone(), doc.clone(), title.clone()).await {
+                        merged.entities.extend(entities);
                     }
-                    if let Some(r) = supp_retry {
-                        merged.entities.extend(r.entities);
-                        merged.cards.extend(r.cards);
+
+                    // 重试：各卡片类型
+                    for card_type in &card_types {
+                        let target = type_targets.get(card_type).copied().unwrap_or(8);
+                        let hint = format!("{}张", target);
+                        if let Ok((mut cards, _)) = compile_chunk_by_type(
+                            ctx.clone(),
+                            doc.clone(),
+                            title.clone(),
+                            card_type.clone(),
+                            hint,
+                        )
+                        .await
+                        {
+                            merged.cards.append(&mut cards);
+                        }
                     }
 
                     if !merged.cards.is_empty() {
@@ -786,7 +762,7 @@ impl Pipeline {
                         }
                         chunk_results[*idx] = merged;
                     } else {
-                        let err_msg = format!("块 {} 两次重试均无输出", idx + 1);
+                        let err_msg = format!("块 {} 重试后仍无输出", idx + 1);
                         println!("  ✗ {}", err_msg);
                         still_failed.push((*idx, err_msg));
                     }
@@ -999,7 +975,8 @@ where
         .unwrap_or_else(|| crate::error::AppError::TaskPanic(format!("{} 全部重试失败", name))))
 }
 
-/// Unified 编译模式：一次 LLM 请求生成 entities + cards
+#[allow(dead_code)]
+/// Unified 编译模式：一次 LLM 请求生成 entities + cards（保留作为备选）
 ///
 /// 文档类型范围：认知科学、心理学、计算机科学、教材类知识文档。
 /// 不涉及散文、小说、诗歌等文学创作。
@@ -1140,6 +1117,161 @@ async fn compile_chunk_unified(
     };
 
     Ok((result, raw_text))
+}
+
+// ═══════════════════════════════════════════════════════════════════
+//  独立类型编译模式：每种卡片类型单独调用 LLM
+// ═══════════════════════════════════════════════════════════════════
+
+/// 计算各卡片类型的目标数量（基于文档长度按比例分配）
+fn calculate_type_targets(total_doc_chars: usize, total_chunks: usize) -> HashMap<CardType, usize> {
+    let total_chunks = total_chunks.max(1);
+
+    let mut map = HashMap::new();
+    if total_doc_chars == 0 {
+        for ct in [
+            CardType::Term,
+            CardType::Knowledge,
+            CardType::CounterIntuit,
+            CardType::Action,
+            CardType::Person,
+            CardType::Quote,
+            CardType::Review,
+        ] {
+            map.insert(ct, 0);
+        }
+        return map;
+    }
+
+    // 全书目标卡片数 = 总字符数 / 5556
+    let total_target = (total_doc_chars as f64 / 5556.0).ceil() as usize;
+    let total_target = total_target.max(8).min(300);
+    let per_chunk_target = (total_target + total_chunks - 1) / total_chunks;
+
+    // 按比例分配（总计 100%）
+    map.insert(CardType::Term, ((per_chunk_target as f64 * 0.22).round() as usize).max(1));
+    map.insert(CardType::Knowledge, ((per_chunk_target as f64 * 0.22).round() as usize).max(1));
+    map.insert(CardType::CounterIntuit, ((per_chunk_target as f64 * 0.18).round() as usize).max(1));
+    map.insert(CardType::Action, ((per_chunk_target as f64 * 0.18).round() as usize).max(1));
+    map.insert(CardType::Person, ((per_chunk_target as f64 * 0.08).round() as usize).max(1));
+    map.insert(CardType::Quote, ((per_chunk_target as f64 * 0.08).round() as usize).max(1));
+    map.insert(CardType::Review, ((per_chunk_target as f64 * 0.04).round() as usize).max(1));
+
+    map
+}
+
+/// 根据卡片类型获取 prompt 文件名
+fn prompt_name_for_type(card_type: CardType) -> &'static str {
+    match card_type {
+        CardType::Term => "term_card",
+        CardType::Knowledge => "knowledge_card",
+        CardType::CounterIntuit => "counter_intuit_card",
+        CardType::Quote => "quote_card",
+        CardType::Person => "person_card",
+        CardType::Action => "action_card",
+        CardType::Review => "review_card",
+    }
+}
+
+/// 实体提取：单独调用 LLM 提取文档中的所有实体
+async fn compile_chunk_entities(
+    ctx: CompileContext,
+    document: String,
+    _title_path: String,
+) -> Result<(Vec<Entity>, String)> {
+    let ctx_ref = &ctx;
+
+    let prompt_template = ctx_ref.load_prompt("entity")?;
+    let prompt = prompt_template.replace(
+        "{document}",
+        &format!("\n\n<document>\n{}\n</document>\n\n", &document),
+    );
+
+    let max_out = ctx_ref.client.max_output_tokens().unwrap_or(8192) as u32;
+    let (response_json, raw_text) = ctx_ref
+        .call_llm_json_with_raw(
+            vec![
+                crate::models::LlmMessage {
+                    role: "system".to_string(),
+                    content: "你是一位实体识别专家。输出必须是严格的 JSON 格式。".to_string(),
+                },
+                crate::models::LlmMessage {
+                    role: "user".to_string(),
+                    content: prompt,
+                },
+            ],
+            Some(max_out),
+        )
+        .await
+        .map_err(|e| AppError::Api(format!("实体提取请求失败: {}", e)))?;
+
+    #[derive(Deserialize)]
+    struct EntityResponse {
+        entities: Vec<Entity>,
+    }
+
+    let resp: EntityResponse = serde_json::from_value(response_json.clone()).map_err(|e| {
+        AppError::JsonParse(format!(
+            "实体提取 JSON 解析失败: {}\n原始响应前500字: {}",
+            e,
+            raw_text.chars().take(500).collect::<String>()
+        ))
+    })?;
+
+    Ok((resp.entities, raw_text))
+}
+
+/// 单类型卡片编译：只生成指定类型的卡片
+async fn compile_chunk_by_type(
+    ctx: CompileContext,
+    document: String,
+    _title_path: String,
+    card_type: CardType,
+    card_count_hint: String,
+) -> Result<(Vec<Card>, String)> {
+    let ctx_ref = &ctx;
+
+    let prompt_name = prompt_name_for_type(card_type.clone());
+    let prompt_template = ctx_ref.load_prompt(prompt_name)?;
+
+    let prompt = prompt_template
+        .replace(
+            "{document}",
+            &format!("\n\n<document>\n{}\n</document>\n\n", &document),
+        )
+        .replace("{card_count_hint}", &card_count_hint);
+
+    let max_out = ctx_ref.client.max_output_tokens().unwrap_or(8192) as u32;
+    let (response_json, raw_text) = ctx_ref
+        .call_llm_json_with_raw(
+            vec![
+                crate::models::LlmMessage {
+                    role: "system".to_string(),
+                    content: "你是一位知识炼金术士。所有输出必须严格基于原文，不添加原文没有的信息。输出必须是严格的 JSON 格式。".to_string(),
+                },
+                crate::models::LlmMessage {
+                    role: "user".to_string(),
+                    content: prompt,
+                },
+            ],
+            Some(max_out),
+        )
+        .await
+        .map_err(|e| {
+            AppError::Api(format!("{} 编译请求失败: {}", card_type.as_str(), e))
+        })?;
+
+    let type_response: TypeCardsResponse = serde_json::from_value(response_json.clone()).map_err(|e| {
+        AppError::JsonParse(format!(
+            "{} 响应 JSON 解析失败: {}\n原始响应前500字: {}",
+            card_type.as_str(),
+            e,
+            raw_text.chars().take(500).collect::<String>()
+        ))
+    })?;
+
+    let cards = type_response.into_cards(card_type);
+    Ok((cards, raw_text))
 }
 
 /// 为卡片分配秒级时间戳 UUID（YYYYMMDDHHMMSS）
