@@ -82,14 +82,10 @@ pub enum LintIssue {
     TitleContentMismatch,
     /// 金句卡缺少原文或出处
     QuoteMissingSource,
-    /// 图示卡缺少可视化结构
-    GraphMissingStructure,
     /// 行动卡缺少步骤或触发条件
     ActionMissingSteps,
     /// 术语卡缺少定义或例子
     TermMissingDefinition,
-    /// 索引卡条目过少
-    IndexTooFewEntries { actual: usize, required: usize },
     /// 综述卡缺少跨主题连接
     ReviewMissingSynthesis,
     /// ref 格式不符合规范
@@ -124,12 +120,8 @@ impl std::fmt::Display for LintIssue {
             }
             LintIssue::TitleContentMismatch => write!(f, "标题与内容不匹配"),
             LintIssue::QuoteMissingSource => write!(f, "金句卡缺少原文或出处"),
-            LintIssue::GraphMissingStructure => write!(f, "图示卡缺少可视化结构"),
             LintIssue::ActionMissingSteps => write!(f, "行动卡缺少步骤或触发条件"),
             LintIssue::TermMissingDefinition => write!(f, "术语卡缺少定义或例子"),
-            LintIssue::IndexTooFewEntries { actual, required } => {
-                write!(f, "索引卡条目过少: {} < {}", actual, required)
-            }
             LintIssue::ReviewMissingSynthesis => write!(f, "综述卡缺少跨主题连接"),
             LintIssue::InvalidRefFormat => write!(f, "ref格式不符合规范"),
             LintIssue::TypeConfusion => write!(f, "卡片类型混淆：内容不属于该类型"),
@@ -293,11 +285,6 @@ pub fn lint_card_with_source(
             "综述卡",
             "行动卡",
             "人物卡",
-            "事件卡",
-            "图示卡",
-            "新词卡",
-            "基础卡",
-            "索引卡",
         ];
         for &ft in &forbidden_titles {
             if card.title.contains(ft) {
@@ -327,8 +314,6 @@ pub fn lint_card_with_source(
             LintIssue::EmptyTitle
                 | LintIssue::EmptyOrShortContent { .. }
                 | LintIssue::QuoteMissingSource
-                | LintIssue::GraphMissingStructure
-                | LintIssue::IndexTooFewEntries { .. }
                 | LintIssue::InvalidRefFormat
                 | LintIssue::TypeConfusion
         )
@@ -366,14 +351,6 @@ pub fn filter_cards_with_source(
         checked_card.quality_score = result.quality_score;
         checked_card.status = if result.is_valid {
             CardStatus::Accepted
-        } else if result
-            .issues
-            .iter()
-            .any(|i| matches!(i, LintIssue::GraphMissingStructure))
-        {
-            checked_card.degraded_from = Some(checked_card.card_type.clone());
-            checked_card.card_type = CardType::Knowledge;
-            CardStatus::Degraded
         } else if result.issues.iter().any(|i| {
             matches!(
                 i,
@@ -829,20 +806,6 @@ fn check_typed_card_requirements(card: &Card, issues: &mut Vec<LintIssue>) {
                 issues.push(LintIssue::QuoteMissingSource);
             }
         }
-        CardType::Graph => {
-            let has_mermaid = card.content.contains("graph ")
-                || card.content.contains("flowchart")
-                || card.content.contains("sequenceDiagram")
-                || card.content.contains("mindmap");
-            let has_structure = card.content.contains("->")
-                || card.content.contains("-->")
-                || card.content.contains("层级")
-                || card.content.contains("流程")
-                || card.content.contains("关系");
-            if !has_mermaid && !has_structure {
-                issues.push(LintIssue::GraphMissingStructure);
-            }
-        }
         CardType::Action => {
             let has_steps = card.content.contains("步骤")
                 || card.content.contains("首先")
@@ -871,24 +834,6 @@ fn check_typed_card_requirements(card: &Card, issues: &mut Vec<LintIssue>) {
                 || card.content.contains("表现为");
             if !has_definition && !has_example {
                 issues.push(LintIssue::TermMissingDefinition);
-            }
-        }
-        CardType::Index => {
-            let entries = card
-                .content
-                .lines()
-                .filter(|line| {
-                    let trimmed = line.trim();
-                    trimmed.starts_with('-')
-                        || trimmed.starts_with('*')
-                        || trimmed.starts_with(char::is_numeric)
-                })
-                .count();
-            if entries < 3 {
-                issues.push(LintIssue::IndexTooFewEntries {
-                    actual: entries,
-                    required: 3,
-                });
             }
         }
         CardType::Review
@@ -969,7 +914,6 @@ fn compute_card_quality_score(_card: &Card, issues: &[LintIssue]) -> f64 {
             | LintIssue::InvalidRefFormat
             | LintIssue::TypeConfusion
             | LintIssue::QuoteMissingSource
-            | LintIssue::GraphMissingStructure
             | LintIssue::MissingEvidence
             | LintIssue::EvidenceNotFound => critical += 1,
 
@@ -977,8 +921,7 @@ fn compute_card_quality_score(_card: &Card, issues: &[LintIssue]) -> f64 {
             LintIssue::EmptyOrShortContent { .. }
             | LintIssue::HighGarbageRatio { .. }
             | LintIssue::LikelyCopied { .. }
-            | LintIssue::TitleContentMismatch
-            | LintIssue::IndexTooFewEntries { .. } => major += 1,
+            | LintIssue::TitleContentMismatch => major += 1,
 
             // Minor: 每个扣 0.05
             LintIssue::LowInfoDensity { .. }

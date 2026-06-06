@@ -228,7 +228,10 @@ async fn handle_compile(cli: Cli) -> cardnote_compiler::error::Result<()> {
         .to_string();
 
     // ── 自动 Provider 健康检测与选择 ──
-    let (api_key, provider, model) = if cli.api_key.is_none() && cli.provider.is_none() {
+    // 命令行 > LLM_PROVIDER 环境变量 > 自动健康检测
+    let effective_provider = cli.provider.clone()
+        .or_else(|| std::env::var("LLM_PROVIDER").ok());
+    let (api_key, provider, model) = if cli.api_key.is_none() && effective_provider.is_none() {
         println!("{} 正在检测所有 Provider 连通性...", "🔍".bright_yellow());
         let health_results = check_all_providers().await;
         print_health_report(&health_results);
@@ -251,7 +254,7 @@ async fn handle_compile(cli: Cli) -> cardnote_compiler::error::Result<()> {
             (key, prov, model)
         }
     } else {
-        let (key, prov) = get_api_config(cli.api_key, cli.provider).await?;
+        let (key, prov) = get_api_config(cli.api_key, effective_provider).await?;
         (key, prov, cli.model)
     };
 
@@ -288,6 +291,20 @@ async fn handle_compile(cli: Cli) -> cardnote_compiler::error::Result<()> {
         None
     };
 
+    // 预先创建本次编译的唯一输出目录，避免输入报告和最终输出目录时间戳冲突
+    let book_title = resolve_book_title(&file, is_pdf);
+    cardnote_compiler::config::ensure_book_registered(&book_title);
+    let timestamp = Local::now().format("%Y%m%d%H%M%S").to_string();
+    let file_stem = Path::new(&file)
+        .file_stem()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .to_string();
+    let file_stem = cardnote_compiler::output::sanitize_filename(&file_stem);
+    let out_dir_name = format!("{}_{}", timestamp, file_stem);
+    let output_dir = std::path::PathBuf::from(&cli.output).join(&out_dir_name);
+    std::fs::create_dir_all(&output_dir)?;
+
     if let Some(scan) = &pdf_scan {
         println!(
             "输入探测: {}，{}页，密度 {:.1} 字/页，置信度 {}%",
@@ -303,8 +320,8 @@ async fn handle_compile(cli: Cli) -> cardnote_compiler::error::Result<()> {
         );
 
         if scan.requires_ocr && !cli.force {
-            let report_dir = cardnote_compiler::output::save_input_quality_report(
-                &cli.output,
+            cardnote_compiler::output::save_input_quality_report_to_dir(
+                &output_dir,
                 &file,
                 Some(scan),
                 &quality::analyze(&format!("# PDF 需要 OCR\n\n{}", scan.reason)),
@@ -314,7 +331,7 @@ async fn handle_compile(cli: Cli) -> cardnote_compiler::error::Result<()> {
                 "\n{} 输入需要 OCR，已中止以避免低质量内容进入 LLM。",
                 "✗".red()
             );
-            println!("质量报告已保存到: {}", report_dir);
+            println!("质量报告已保存到: {}", output_dir.display());
             println!("如确认仍要继续，请使用 --force。");
             return Ok(());
         }
@@ -330,14 +347,14 @@ async fn handle_compile(cli: Cli) -> cardnote_compiler::error::Result<()> {
         input_report.grade().bold(),
         input_report.overall_score()
     );
-    let report_dir = cardnote_compiler::output::save_input_quality_report(
-        &cli.output,
+    cardnote_compiler::output::save_input_quality_report_to_dir(
+        &output_dir,
         &file,
         pdf_scan.as_ref(),
         &input_report,
     )
     .await?;
-    println!("输入质量报告已保存到: {}", report_dir);
+    println!("输入质量报告已保存到: {}", output_dir.display());
 
     if !input_report.is_acceptable() && !cli.force {
         println!(
@@ -349,22 +366,8 @@ async fn handle_compile(cli: Cli) -> cardnote_compiler::error::Result<()> {
         return Ok(());
     }
 
-    let book_title = resolve_book_title(&file, is_pdf);
-    // 自动注册到 .cardnote/books.json（如果还不存在）
-    cardnote_compiler::config::ensure_book_registered(&book_title);
-
-    // 创建带 timestamp 的输出目录，传给 Pipeline 用于实时写入每块结果
+    // 输出目录已在前面创建，直接传给 Pipeline 用于实时写入每块结果
     let client_for_usage = client.clone();
-    let timestamp = Local::now().format("%Y%m%d%H%M%S").to_string();
-    let file_stem = Path::new(&file)
-        .file_stem()
-        .unwrap_or_default()
-        .to_string_lossy()
-        .to_string();
-    let file_stem = cardnote_compiler::output::sanitize_filename(&file_stem);
-    let out_dir_name = format!("{}_{}", timestamp, file_stem);
-    let output_dir = std::path::PathBuf::from(&cli.output).join(&out_dir_name);
-    std::fs::create_dir_all(&output_dir)?;
     let pipeline = Pipeline::new(client, Some(output_dir.clone()));
 
     let compile_start = std::time::Instant::now();
@@ -498,31 +501,6 @@ async fn handle_compile(cli: Cli) -> cardnote_compiler::error::Result<()> {
             }
             Err(e) => {
                 eprintln!("  ⚠ 编译记录持久化失败: {}", e);
-            }
-        }
-    }
-
-    let src_report = std::path::Path::new(&report_dir).join("input_quality_report.md");
-    let dest_report = std::path::Path::new(&output_path).join("input_quality_report.md");
-    if src_report.exists() {
-        if let Err(e) = tokio::fs::copy(&src_report, &dest_report).await {
-            eprintln!("  ⚠ 质量报告复制失败: {}", e);
-        } else {
-            let is_safe = match (
-                std::fs::canonicalize(&report_dir),
-                std::fs::canonicalize(&cli.output),
-            ) {
-                (Ok(r), Ok(o)) => r.starts_with(&o),
-                _ => !std::path::Path::new(&report_dir)
-                    .components()
-                    .any(|c| matches!(c, std::path::Component::ParentDir)),
-            };
-            if is_safe {
-                if let Err(e) = tokio::fs::remove_dir_all(&report_dir).await {
-                    eprintln!("  ⚠ 临时报告目录删除失败: {}", e);
-                }
-            } else {
-                eprintln!("  ⚠ 跳过删除异常路径: {}", report_dir);
             }
         }
     }

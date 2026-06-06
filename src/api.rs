@@ -13,8 +13,8 @@ use crate::models::{LlmMessage, LlmRequest, LlmUsage, ResponseFormat};
 use crate::providers::ProviderRegistry;
 use crate::rate_limiter::RateLimiter;
 
-/// 默认请求超时(秒)
-const DEFAULT_TIMEOUT_SECS: u64 = 120;
+/// 默认请求超时(秒) — 大文档+高max_tokens生成可能需数分钟
+const DEFAULT_TIMEOUT_SECS: u64 = 600;
 
 /// LLM 客户端（支持模型自动回退 + Token 用量追踪 + 多协议 JSON + RPM 限流）
 #[derive(Clone, Debug)]
@@ -273,6 +273,26 @@ impl LlmClient {
                     }
                     Err(e) => {
                         eprintln!("    ⚠ 内容提取失败 (尝试 {}/3): {}", attempt, e);
+                        // 诊断：打印响应结构，定位 provider 返回格式问题
+                        let top_keys = response.as_object().map(|o| {
+                            o.keys().map(|k| k.as_str()).collect::<Vec<_>>().join(", ")
+                        });
+                        let choice0 = response.get("choices").and_then(|c| c.get(0));
+                        let msg_keys = choice0.and_then(|c| c.get("message")).and_then(|m| m.as_object()).map(|o| {
+                            o.keys().map(|k| k.as_str()).collect::<Vec<_>>().join(", ")
+                        });
+                        let content_preview = choice0.and_then(|c| c.get("message")).and_then(|m| m.get("content")).and_then(|c| c.as_str()).map(|s| {
+                            if s.is_empty() { "<空字符串>".to_string() } else { format!("<前50字> {}", &s[..s.len().min(50)]) }
+                        });
+                        let reasoning_preview = choice0.and_then(|c| c.get("message")).and_then(|m| m.get("reasoning_content")).and_then(|c| c.as_str()).map(|s| {
+                            if s.is_empty() { "<空字符串>".to_string() } else { format!("<前50字> {}", &s[..s.len().min(50)]) }
+                        });
+                        let finish_reason = choice0.and_then(|c| c.get("finish_reason")).and_then(|v| v.as_str());
+                        eprintln!("      [诊断] response keys: {:?}", top_keys.unwrap_or_else(|| "<无>".to_string()));
+                        eprintln!("      [诊断] choices[0].message keys: {:?}", msg_keys.unwrap_or_else(|| "<无>".to_string()));
+                        eprintln!("      [诊断] content: {:?}", content_preview.unwrap_or_else(|| "<字段缺失>".to_string()));
+                        eprintln!("      [诊断] reasoning_content: {:?}", reasoning_preview.unwrap_or_else(|| "<字段缺失>".to_string()));
+                        eprintln!("      [诊断] finish_reason: {:?}", finish_reason.unwrap_or("<无>"));
                         last_error = Some(e);
                     }
                 },
@@ -519,11 +539,26 @@ impl LlmClient {
 
         let latency_ms = start.elapsed().as_millis() as u64;
 
-        // 尝试解析 JSON body（即使非 2xx 也可能有 JSON error body）
-        let body = response
-            .json::<Value>()
-            .await
-            .unwrap_or_else(|_| serde_json::json!({}));
+        // 先读取原始文本，再尝试 JSON 解析（便于诊断非 JSON 响应）
+        let raw_text = response.text().await.unwrap_or_default();
+        let body = if raw_text.trim().is_empty() {
+            eprintln!("    ⚠ API 返回空响应体 (HTTP {})", status.as_u16());
+            serde_json::json!({})
+        } else {
+            match serde_json::from_str::<Value>(&raw_text) {
+                Ok(json) => json,
+                Err(e) => {
+                    let preview = if raw_text.len() > 200 {
+                        format!("{}...", &raw_text[..200])
+                    } else {
+                        raw_text.clone()
+                    };
+                    eprintln!("    ⚠ API 返回非 JSON 响应 (HTTP {}): parse err={}, body preview: {}",
+                        status.as_u16(), e, preview);
+                    serde_json::json!({})
+                }
+            }
+        };
 
         let usage = self.extract_usage(&body, latency_ms);
         self.record_usage(usage).await;

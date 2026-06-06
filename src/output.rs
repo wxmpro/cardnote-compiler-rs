@@ -69,7 +69,7 @@ async fn apply_42md_md2pdf(md_path: &Path) -> Result<()> {
     Ok(())
 }
 
-/// 保存输入质量报告
+/// 保存输入质量报告（自动创建新的带时间戳目录）
 pub async fn save_input_quality_report(
     output_dir: &str,
     source_file: &str,
@@ -81,6 +81,17 @@ pub async fn save_input_quality_report(
         .and_then(|s| s.to_str())
         .unwrap_or("input_quality");
     let dir = create_output_dir(output_dir, Some(title)).await?;
+    save_input_quality_report_to_dir(&dir, source_file, scan, report).await?;
+    Ok(dir.to_string_lossy().to_string())
+}
+
+/// 保存输入质量报告到指定目录（不创建新目录）
+pub async fn save_input_quality_report_to_dir(
+    dir: &Path,
+    source_file: &str,
+    scan: Option<&ScanResult>,
+    report: &QualityReport,
+) -> Result<()> {
     let report_path = dir.join("input_quality_report.md");
 
     let mut content = String::new();
@@ -115,9 +126,9 @@ pub async fn save_input_quality_report(
         }
     }
 
-    fs::create_dir_all(&dir).await?;
+    fs::create_dir_all(dir).await?;
     fs::write(&report_path, content).await?;
-    Ok(dir.to_string_lossy().to_string())
+    Ok(())
 }
 
 /// 过滤被拒绝的卡片：reject_reason 非空或 status != Accepted 的卡片不进入最终输出

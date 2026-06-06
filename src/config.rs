@@ -589,13 +589,17 @@ pub async fn get_api_config(
     // 2. 优先扫描配置文件（统一配置优先于 .env）
     let credentials = scan_credentials();
 
-    // 2a. 指定了 provider — 在配置文件中查找对应提供商
+    // 2a. 指定了 provider — 在配置文件中查找对应提供商（大小写不敏感）
     if let Some(ref requested_provider) = provider_arg {
-        if let Some(cred) = credentials.get(requested_provider) {
+        let requested_lower = requested_provider.to_lowercase();
+        if let Some((matched_id, cred)) = credentials
+            .iter()
+            .find(|(k, _)| k.to_lowercase() == requested_lower)
+        {
             println!(
                 "{} 使用指定提供商 {} 配置 ({})",
                 "✓".green(),
-                requested_provider.bright_cyan(),
+                matched_id.bright_cyan(),
                 match &cred.source {
                     CredentialSource::EnvVar => "环境变量",
                     CredentialSource::ConfigFile(_) => "配置文件",
@@ -603,14 +607,14 @@ pub async fn get_api_config(
                     CredentialSource::UserInput => "手动输入",
                 }
             );
-            return Ok((cred.api_key.clone(), requested_provider.clone()));
+            return Ok((cred.api_key.clone(), matched_id.clone()));
         }
 
-        // 配置文件中没有 — 回退到 .env 匹配
+        // 配置文件中没有 — 回退到 .env 匹配（大小写不敏感）
         if let Some(config) = AppConfig::from_env()
             && !config.api_key.is_empty()
             && config.api_key.len() > 10
-            && config.provider == *requested_provider
+            && config.provider.to_lowercase() == requested_lower
         {
             return Ok((config.api_key, config.provider));
         }

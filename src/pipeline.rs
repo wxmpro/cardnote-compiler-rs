@@ -230,10 +230,9 @@ impl CompileContext {
         messages: Vec<LlmMessage>,
         max_tokens: Option<u32>,
     ) -> Result<(serde_json::Value, String)> {
-        // 先走普通 chat 拿到原始文本，再自己解析
-        let raw = self.call_llm(messages.clone(), max_tokens).await?;
-        let json = serde_json::from_str::<serde_json::Value>(&raw)
-            .map_err(|e| crate::error::AppError::JsonParse(format!("原始响应 JSON 解析失败: {}\n原始响应前500字: {}", e, &raw[..raw.len().min(500)])))?;
+        // 走 JSON mode（response_format: json_object），API 返回纯 JSON
+        let json = self.call_llm_json(messages.clone(), max_tokens).await?;
+        let raw = serde_json::to_string_pretty(&json).unwrap_or_default();
         Ok((json, raw))
     }
 
@@ -422,7 +421,7 @@ impl Pipeline {
         };
 
         // 第二次：补充类型
-        let supp_types = "人物卡、金句卡、事件卡、图示卡、新词卡、综述卡、基础卡、索引卡";
+        let supp_types = "人物卡、金句卡、综述卡";
         let (supp_result, _supp_raw) = match with_retry("unified_supp", || {
             compile_chunk_unified(
                 ctx.clone(),
@@ -547,7 +546,7 @@ impl Pipeline {
 
         // 2b. 编译未完成的块（两次触发：核心类型 + 补充类型）
         const CORE_TYPES: &str = "术语卡、新知卡、反常识卡、行动卡";
-        const SUPP_TYPES: &str = "人物卡、金句卡、事件卡、图示卡、新词卡、综述卡、基础卡、索引卡";
+        const SUPP_TYPES: &str = "人物卡、金句卡、综述卡";
         let mut last_ts: i64 = 0;
         for idx in &pending {
             let idx = *idx;

@@ -14,12 +14,7 @@ pub enum CardType {
     Person,        // 人物卡
     Term,          // 术语卡
     Quote,         // 金句卡
-    Event,         // 事件卡
     Action,        // 行动卡
-    Graph,         // 图示卡
-    NewWord,       // 新词卡
-    Note,          // 基础卡
-    Index,         // 索引卡
     CounterIntuit, // 反常识卡
     Review,        // 综述卡
 }
@@ -31,12 +26,7 @@ impl CardType {
             CardType::Term => "术语卡",
             CardType::Knowledge => "新知卡",
             CardType::Quote => "金句卡",
-            CardType::Event => "事件卡",
             CardType::Action => "行动卡",
-            CardType::Graph => "图示卡",
-            CardType::NewWord => "新词卡",
-            CardType::Note => "基础卡",
-            CardType::Index => "索引卡",
             CardType::CounterIntuit => "反常识卡",
             CardType::Review => "综述卡",
         }
@@ -48,12 +38,7 @@ impl CardType {
             "术语卡" => Some(CardType::Term),
             "新知卡" => Some(CardType::Knowledge),
             "金句卡" => Some(CardType::Quote),
-            "事件卡" => Some(CardType::Event),
             "行动卡" => Some(CardType::Action),
-            "图示卡" => Some(CardType::Graph),
-            "新词卡" => Some(CardType::NewWord),
-            "基础卡" => Some(CardType::Note),
-            "索引卡" => Some(CardType::Index),
             "反常识卡" => Some(CardType::CounterIntuit),
             "综述卡" => Some(CardType::Review),
             _ => None,
@@ -614,12 +599,9 @@ mod tests {
         assert_eq!(CardType::parse("术语卡"), Some(CardType::Term));
         assert_eq!(CardType::parse("新知卡"), Some(CardType::Knowledge));
         assert_eq!(CardType::parse("金句卡"), Some(CardType::Quote));
-        assert_eq!(CardType::parse("事件卡"), Some(CardType::Event));
         assert_eq!(CardType::parse("行动卡"), Some(CardType::Action));
-        assert_eq!(CardType::parse("图示卡"), Some(CardType::Graph));
-        assert_eq!(CardType::parse("新词卡"), Some(CardType::NewWord));
-        assert_eq!(CardType::parse("基础卡"), Some(CardType::Note));
-        assert_eq!(CardType::parse("索引卡"), Some(CardType::Index));
+        assert_eq!(CardType::parse("反常识卡"), Some(CardType::CounterIntuit));
+        assert_eq!(CardType::parse("综述卡"), Some(CardType::Review));
         assert_eq!(CardType::parse("未知类型"), None);
     }
 
