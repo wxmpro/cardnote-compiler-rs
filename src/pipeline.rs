@@ -10,7 +10,7 @@ use crate::doc_type::{DocTypeDetector, DocumentType};
 use crate::error::{AppError, Result};
 use crate::models::{
     Card, ChunkInfo, CompilationDiagnostics, CompilationResult, Entity, KnowledgeGraph, LlmMessage,
-    Relation, StageFail, Summary,
+    StageFail, Summary,
 };
 use crate::stages::common::{ChatFn, ChatJsonFn};
 use crate::stages::entities::unify_entities;
@@ -35,10 +35,8 @@ pub fn fnv1a_hash_str(data: &str) -> String {
 struct ChunkResult {
     document: String,
     title_path: String,
-    summary: Summary,
     entities: Vec<Entity>,
     cards: Vec<Card>,
-    relations: Vec<Relation>,
 }
 
 /// 编译缓存（用于断点续编译）
@@ -392,7 +390,10 @@ impl Pipeline {
         let ctx = self.ctx.clone();
 
         let doc_char_count = document.chars().count();
-        let (result, _raw) = match with_retry("unified", || {
+
+        // 第一次：核心类型
+        let core_types = "术语卡、新知卡、反常识卡、行动卡";
+        let (core_result, _core_raw) = match with_retry("unified_core", || {
             compile_chunk_unified(
                 ctx.clone(),
                 document.to_string(),
@@ -401,6 +402,7 @@ impl Pipeline {
                 book_title.to_string(),
                 doc_char_count,
                 1,
+                core_types,
             )
         })
         .await
@@ -408,9 +410,9 @@ impl Pipeline {
             Ok((r, raw)) => (r, raw),
             Err(e) => {
                 let err_msg = format!("{}", e);
-                println!("  ✗ Unified 编译失败: {}", err_msg);
+                println!("  ✗ 核心类型编译失败: {}", err_msg);
                 diagnostics.failures.push(StageFail {
-                    stage: "unified".to_string(),
+                    stage: "unified_core".to_string(),
                     error: err_msg,
                     retry_count: 3,
                     final_status: "failed".to_string(),
@@ -419,10 +421,45 @@ impl Pipeline {
             }
         };
 
+        // 第二次：补充类型
+        let supp_types = "人物卡、金句卡、事件卡、图示卡、新词卡、综述卡、基础卡、索引卡";
+        let (supp_result, _supp_raw) = match with_retry("unified_supp", || {
+            compile_chunk_unified(
+                ctx.clone(),
+                document.to_string(),
+                String::new(),
+                doc_type,
+                book_title.to_string(),
+                doc_char_count,
+                1,
+                supp_types,
+            )
+        })
+        .await
+        {
+            Ok((r, raw)) => (r, raw),
+            Err(e) => {
+                let err_msg = format!("{}", e);
+                println!("  ✗ 补充类型编译失败: {}", err_msg);
+                diagnostics.failures.push(StageFail {
+                    stage: "unified_supp".to_string(),
+                    error: err_msg,
+                    retry_count: 3,
+                    final_status: "failed".to_string(),
+                });
+                (ChunkResult::default(), String::new())
+            }
+        };
+
+        // 合并两次结果
+        let mut all_entities = core_result.entities;
+        all_entities.extend(supp_result.entities);
+        let mut all_cards = core_result.cards;
+        all_cards.extend(supp_result.cards);
+
         // 为单块结果分配 UUID 和 chunk_id
-        let mut result = result;
-        assign_unique_ids_with_base(&mut result.cards, 0);
-        for card in &mut result.cards {
+        assign_unique_ids_with_base(&mut all_cards, 0);
+        for card in &mut all_cards {
             card.chunk_id = "chunk_00".to_string();
         }
 
@@ -430,8 +467,8 @@ impl Pipeline {
         println!("编译完成！");
         println!(
             "  实体: {} 个  |  卡片: {} 张",
-            result.entities.len(),
-            result.cards.len()
+            all_entities.len(),
+            all_cards.len()
         );
         if !diagnostics.failures.is_empty() {
             println!(
@@ -448,11 +485,11 @@ impl Pipeline {
 
         Ok(CompilationResult {
             source_file: source_file.to_string(),
-            summary: result.summary,
-            cards: result.cards,
+            summary: Summary::default(),
+            cards: all_cards,
             graph: KnowledgeGraph {
-                entities: result.entities.clone(),
-                relations: result.relations,
+                entities: all_entities,
+                relations: Vec::new(),
             },
             chunks: Vec::new(),
             diagnostics,
@@ -508,7 +545,9 @@ impl Pipeline {
             println!("  🔄 继续编译未完成的块: {:?}", pending);
         }
 
-        // 2b. 编译未完成的块（完全串行，一次一个请求）
+        // 2b. 编译未完成的块（两次触发：核心类型 + 补充类型）
+        const CORE_TYPES: &str = "术语卡、新知卡、反常识卡、行动卡";
+        const SUPP_TYPES: &str = "人物卡、金句卡、事件卡、图示卡、新词卡、综述卡、基础卡、索引卡";
         let mut last_ts: i64 = 0;
         for idx in &pending {
             let idx = *idx;
@@ -516,55 +555,127 @@ impl Pipeline {
             let (title, doc) = chunks[idx].clone();
             println!("  处理块 {}/{}...", idx + 1, chunks_len);
             let bt = book_title.to_string();
-            match compile_chunk_unified(ctx.clone(), doc, title, doc_type, bt, total_doc_chars, chunks_len).await {
-                Ok((mut result, raw_text)) => {
-                    // 分配跨块唯一的 UUID 和 chunk_id
-                    last_ts = assign_unique_ids_with_base(&mut result.cards, last_ts);
-                    for card in &mut result.cards {
-                        card.chunk_id = format!("chunk_{:02}", idx);
-                    }
 
+            // 第一次：核心类型
+            let core_result = match compile_chunk_unified(
+                ctx.clone(),
+                doc.clone(),
+                title.clone(),
+                doc_type,
+                bt.clone(),
+                total_doc_chars,
+                chunks_len,
+                CORE_TYPES,
+            )
+            .await
+            {
+                Ok((r, raw)) => {
                     println!(
-                        "  ✓ 块 {}/{} 完成 — 实体 {} 个 | 卡片 {} 张",
-                        idx + 1,
-                        chunks_len,
-                        result.entities.len(),
-                        result.cards.len()
+                        "    ✓ 核心类型: {} 实体 | {} 卡片",
+                        r.entities.len(),
+                        r.cards.len()
                     );
-                    // 实时写入 output 目录
-                    if let Some(ref out_dir) = ctx.output_dir {
-                        let chunks_dir = out_dir.join("chunks");
-                        std::fs::create_dir_all(&chunks_dir).ok();
-                        let prefix = format!("chunk_{:02}", idx);
-                        // 原始 JSON
-                        std::fs::write(chunks_dir.join(format!("{}_raw.json", prefix)), &raw_text).ok();
-                        // 解析后的结构化 JSON
-                        if let Ok(json) = serde_json::to_string_pretty(&result) {
-                            std::fs::write(chunks_dir.join(format!("{}.json", prefix)), json).ok();
-                        }
-                        // 卡片 Markdown（带类型标题，用于单块调试查看）
-                        let cards_md: Vec<String> = result.cards.iter().map(|c| c.to_markdown()).collect();
-                        std::fs::write(
-                            chunks_dir.join(format!("{}_cards.md", prefix)),
-                            cards_md.join("\n\n---\n\n"),
-                        ).ok();
-                        // 实体列表
-                        let mut entities_md = String::from("# 实体列表\n\n");
-                        for e in &result.entities {
-                            entities_md.push_str(&format!("- **{}** ({}): {}\n", e.name, e.entity_type, e.context));
-                        }
-                        std::fs::write(chunks_dir.join(format!("{}_entities.md", prefix)), entities_md).ok();
-                    }
-                    chunk_results[idx] = result.clone();
-                    cache.set_chunk_result(idx, result);
-                    cache.save(source_file, &provider, &model, document).ok();
+                    Some((r, raw))
                 }
                 Err(e) => {
-                    let err_msg = format!("块 {} 编译失败: {}", idx + 1, e);
-                    println!("  ✗ {}", err_msg);
-                    failed_chunks.push((idx, err_msg));
+                    println!("    ✗ 核心类型编译失败: {}", e);
+                    None
                 }
+            };
+
+            // 第二次：补充类型
+            let supp_result = match compile_chunk_unified(
+                ctx.clone(),
+                doc.clone(),
+                title.clone(),
+                doc_type,
+                bt,
+                total_doc_chars,
+                chunks_len,
+                SUPP_TYPES,
+            )
+            .await
+            {
+                Ok((r, raw)) => {
+                    println!(
+                        "    ✓ 补充类型: {} 实体 | {} 卡片",
+                        r.entities.len(),
+                        r.cards.len()
+                    );
+                    Some((r, raw))
+                }
+                Err(e) => {
+                    println!("    ✗ 补充类型编译失败: {}", e);
+                    None
+                }
+            };
+
+            // 合并两次结果
+            let mut merged = ChunkResult {
+                document: doc,
+                title_path: title,
+                ..Default::default()
+            };
+            let mut all_raw = String::new();
+            if let Some((r, raw)) = core_result {
+                merged.entities.extend(r.entities);
+                merged.cards.extend(r.cards);
+                all_raw.push_str(&raw);
             }
+            if let Some((r, raw)) = supp_result {
+                merged.entities.extend(r.entities);
+                merged.cards.extend(r.cards);
+                if !all_raw.is_empty() {
+                    all_raw.push_str("\n\n---\n\n");
+                }
+                all_raw.push_str(&raw);
+            }
+
+            if merged.cards.is_empty() {
+                let err_msg = format!("块 {} 两次编译均无输出", idx + 1);
+                println!("  ✗ {}", err_msg);
+                failed_chunks.push((idx, err_msg));
+                continue;
+            }
+
+            // 分配跨块唯一的 UUID 和 chunk_id
+            last_ts = assign_unique_ids_with_base(&mut merged.cards, last_ts);
+            for card in &mut merged.cards {
+                card.chunk_id = format!("chunk_{:02}", idx);
+            }
+
+            println!(
+                "  ✓ 块 {}/{} 合并完成 — 实体 {} 个 | 卡片 {} 张",
+                idx + 1,
+                chunks_len,
+                merged.entities.len(),
+                merged.cards.len()
+            );
+
+            // 实时写入 output 目录
+            if let Some(ref out_dir) = ctx.output_dir {
+                let chunks_dir = out_dir.join("chunks");
+                std::fs::create_dir_all(&chunks_dir).ok();
+                let prefix = format!("chunk_{:02}", idx);
+                std::fs::write(chunks_dir.join(format!("{}_raw.json", prefix)), &all_raw).ok();
+                if let Ok(json) = serde_json::to_string_pretty(&merged) {
+                    std::fs::write(chunks_dir.join(format!("{}.json", prefix)), json).ok();
+                }
+                let cards_md: Vec<String> = merged.cards.iter().map(|c| c.to_markdown()).collect();
+                std::fs::write(
+                    chunks_dir.join(format!("{}_cards.md", prefix)),
+                    cards_md.join("\n\n---\n\n"),
+                )
+                .ok();
+                let mut entities_md = String::from("# 实体列表\n\n");
+                for e in &merged.entities {
+                    entities_md.push_str(&format!("- **{}** ({}): {}\n", e.name, e.entity_type, e.context));
+                }
+                std::fs::write(chunks_dir.join(format!("{}_entities.md", prefix)), entities_md).ok();
+            }
+            chunk_results[idx] = merged.clone();
+            cache.set_chunk_result(idx, merged);
+            cache.save(source_file, &provider, &model, document).ok();
         }
 
         // 2c. 对失败块进行整体重试（一次）
@@ -597,48 +708,88 @@ impl Pipeline {
                 if let Some((title, doc)) = chunks_for_retry.get(*idx) {
                     println!("  重试块 {}/{}...", idx + 1, chunks_len);
                     let ctx = self.ctx.clone();
-                    match compile_chunk_unified(
+                    let bt = book_title.to_string();
+
+                    // 重试：核心类型
+                    let core_retry = match compile_chunk_unified(
                         ctx.clone(),
                         doc.clone(),
                         title.clone(),
                         doc_type,
-                        book_title.to_string(),
+                        bt.clone(),
                         total_doc_chars,
                         chunks_len,
+                        CORE_TYPES,
                     )
                     .await
                     {
-                        Ok((mut result, raw_text)) => {
-                            // 为重试块分配 UUID 和 chunk_id
-                            last_ts = assign_unique_ids_with_base(&mut result.cards, last_ts);
-                            for card in &mut result.cards {
-                                card.chunk_id = format!("chunk_{:02}", idx);
-                            }
-
-                            println!(
-                                "  ✓ 块 {}/{} 重试成功 — 实体 {} 个 | 卡片 {} 张",
-                                idx + 1,
-                                chunks_len,
-                                result.entities.len(),
-                                result.cards.len()
-                            );
-                            // 实时写入
-                            if let Some(ref out_dir) = ctx.output_dir {
-                                let chunks_dir = out_dir.join("chunks");
-                                std::fs::create_dir_all(&chunks_dir).ok();
-                                let prefix = format!("chunk_{:02}", idx);
-                                std::fs::write(chunks_dir.join(format!("{}_raw.json", prefix)), &raw_text).ok();
-                                if let Ok(json) = serde_json::to_string_pretty(&result) {
-                                    std::fs::write(chunks_dir.join(format!("{}.json", prefix)), json).ok();
-                                }
-                            }
-                            chunk_results[*idx] = result;
-                        }
+                        Ok((r, _)) => Some(r),
                         Err(e) => {
-                            let err_msg = format!("块 {} 重试失败: {}", idx + 1, e);
-                            println!("  ✗ {}", err_msg);
-                            still_failed.push((*idx, err_msg));
+                            println!("    ✗ 核心类型重试失败: {}", e);
+                            None
                         }
+                    };
+
+                    // 重试：补充类型
+                    let supp_retry = match compile_chunk_unified(
+                        ctx.clone(),
+                        doc.clone(),
+                        title.clone(),
+                        doc_type,
+                        bt,
+                        total_doc_chars,
+                        chunks_len,
+                        SUPP_TYPES,
+                    )
+                    .await
+                    {
+                        Ok((r, _)) => Some(r),
+                        Err(e) => {
+                            println!("    ✗ 补充类型重试失败: {}", e);
+                            None
+                        }
+                    };
+
+                    // 合并重试结果
+                    let mut merged = ChunkResult {
+                        document: doc.clone(),
+                        title_path: title.clone(),
+                        ..Default::default()
+                    };
+                    if let Some(r) = core_retry {
+                        merged.entities.extend(r.entities);
+                        merged.cards.extend(r.cards);
+                    }
+                    if let Some(r) = supp_retry {
+                        merged.entities.extend(r.entities);
+                        merged.cards.extend(r.cards);
+                    }
+
+                    if !merged.cards.is_empty() {
+                        last_ts = assign_unique_ids_with_base(&mut merged.cards, last_ts);
+                        for card in &mut merged.cards {
+                            card.chunk_id = format!("chunk_{:02}", idx);
+                        }
+                        println!(
+                            "  ✓ 块 {}/{} 重试成功 — 实体 {} 个 | 卡片 {} 张",
+                            idx + 1,
+                            chunks_len,
+                            merged.entities.len(),
+                            merged.cards.len()
+                        );
+                        if let Some(ref out_dir) = ctx.output_dir {
+                            let chunks_dir = out_dir.join("chunks");
+                            std::fs::create_dir_all(&chunks_dir).ok();
+                            let prefix = format!("chunk_{:02}", idx);
+                            if let Ok(json) = serde_json::to_string_pretty(&merged) {
+                                std::fs::write(chunks_dir.join(format!("{}.json", prefix)), json).ok();
+                            }
+                        }
+                        chunk_results[*idx] = merged;
+                    } else {
+                        let err_msg = format!("块 {} 两次重试均无输出", idx + 1);
+                        println!("  ✗ {}", err_msg);
+                        still_failed.push((*idx, err_msg));
                     }
                 }
             }
@@ -849,7 +1000,10 @@ where
         .unwrap_or_else(|| crate::error::AppError::TaskPanic(format!("{} 全部重试失败", name))))
 }
 
-/// Unified 编译模式：一次 LLM 请求生成 summary + entities + cards + relations
+/// Unified 编译模式：一次 LLM 请求生成 entities + cards
+///
+/// 文档类型范围：认知科学、心理学、计算机科学、教材类知识文档。
+/// 不涉及散文、小说、诗歌等文学创作。
 async fn compile_chunk_unified(
     ctx: CompileContext,
     document: String,
@@ -858,6 +1012,7 @@ async fn compile_chunk_unified(
     _book_title: String,
     total_doc_chars: usize,
     total_chunks: usize,
+    allowed_types: &str,
 ) -> Result<(ChunkResult, String)> {
     let ctx_ref = &ctx;
 
@@ -940,7 +1095,8 @@ async fn compile_chunk_unified(
     // [S1] Prompt 边界标记：用 XML 标签隔离用户文档，降低 prompt injection 风险
     let prompt = prompt_template
         .replace("{document}", &format!("\n\n<document>\n{}\n</document>\n\n", &document))
-        .replace("{card_count_hint}", &card_count_hint);
+        .replace("{card_count_hint}", &card_count_hint)
+        .replace("{allowed_types}", allowed_types);
 
     let system = "你是一位以认知边界爆破与知识最小信息单位为双重信仰的知识炼金术士。你的核心身份是认知牢笼的越狱者、溯源者、连接者和行为改变的系统设计师。所有输出必须严格基于原文，不添加原文没有的信息。".to_string();
 
@@ -980,10 +1136,8 @@ async fn compile_chunk_unified(
     let result = ChunkResult {
         document: document.clone(),
         title_path,
-        summary: Summary::default(),
         entities,
         cards,
-        relations: Vec::new(),
     };
 
     Ok((result, raw_text))
